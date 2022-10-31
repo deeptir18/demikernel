@@ -29,25 +29,23 @@ use crate::runtime::{
         rte_eth_link_get_nowait,
         rte_eth_macaddr_get,
         rte_eth_promiscuous_enable,
-        rte_eth_rx_mq_mode_ETH_MQ_RX_RSS as ETH_MQ_RX_RSS,
+        rte_eth_rss_ip,
+        rte_eth_rx_mq_mode_RTE_ETH_MQ_RX_RSS as RTE_ETH_MQ_RX_RSS,
+        rte_eth_rx_offload_tcp_cksum,
+        rte_eth_rx_offload_udp_cksum,
         rte_eth_rx_queue_setup,
         rte_eth_rxconf,
-        rte_eth_tx_mq_mode_ETH_MQ_TX_NONE as ETH_MQ_TX_NONE,
+        rte_eth_tx_mq_mode_RTE_ETH_MQ_TX_NONE as RTE_ETH_MQ_TX_NONE,
+        rte_eth_tx_offload_tcp_cksum,
+        rte_eth_tx_offload_udp_cksum,
         rte_eth_tx_queue_setup,
         rte_eth_txconf,
         rte_ether_addr,
-        DEV_RX_OFFLOAD_JUMBO_FRAME,
-        DEV_RX_OFFLOAD_TCP_CKSUM,
-        DEV_RX_OFFLOAD_UDP_CKSUM,
-        DEV_TX_OFFLOAD_MULTI_SEGS,
-        DEV_TX_OFFLOAD_TCP_CKSUM,
-        DEV_TX_OFFLOAD_UDP_CKSUM,
-        ETH_LINK_FULL_DUPLEX,
-        ETH_LINK_UP,
-        ETH_RSS_IP,
         RTE_ETHER_MAX_JUMBO_FRAME_LEN,
         RTE_ETHER_MAX_LEN,
         RTE_ETH_DEV_NO_OWNER,
+        RTE_ETH_LINK_FULL_DUPLEX,
+        RTE_ETH_LINK_UP,
         RTE_PKTMBUF_HEADROOM,
     },
     network::{
@@ -60,12 +58,12 @@ use crate::runtime::{
     },
     Runtime,
 };
-use ::anyhow::{
+use anyhow::{
     bail,
     format_err,
     Error,
 };
-use ::std::{
+use std::{
     collections::HashMap,
     ffi::CString,
     mem::MaybeUninit,
@@ -261,31 +259,31 @@ impl DPDKRuntime {
         }
 
         let mut port_conf: rte_eth_conf = unsafe { MaybeUninit::zeroed().assume_init() };
-        port_conf.rxmode.max_rx_pkt_len = if use_jumbo_frames {
+        port_conf.rxmode.max_lro_pkt_size = if use_jumbo_frames {
             RTE_ETHER_MAX_JUMBO_FRAME_LEN
         } else {
             RTE_ETHER_MAX_LEN
         };
         if tcp_checksum_offload {
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_CKSUM as u64;
+            port_conf.rxmode.offloads |= unsafe { rte_eth_rx_offload_tcp_cksum() };
         }
         if udp_checksum_offload {
-            port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_UDP_CKSUM as u64;
+            port_conf.rxmode.offloads |= unsafe { rte_eth_rx_offload_udp_cksum() };
         }
-        if use_jumbo_frames {
+        /*if use_jumbo_frames {
             port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME as u64;
-        }
-        port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
-        port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IP as u64 | dev_info.flow_type_rss_offloads;
+        }*/
+        port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+        port_conf.rx_adv_conf.rss_conf.rss_hf = unsafe { rte_eth_rss_ip() } | dev_info.flow_type_rss_offloads;
 
-        port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+        port_conf.txmode.mq_mode = RTE_ETH_MQ_TX_NONE;
         if tcp_checksum_offload {
-            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM as u64;
+            port_conf.txmode.offloads |= unsafe { rte_eth_tx_offload_tcp_cksum() };
         }
         if udp_checksum_offload {
-            port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM as u64;
+            port_conf.txmode.offloads |= unsafe { rte_eth_tx_offload_udp_cksum() };
         }
-        port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS as u64;
+        //port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS as u64;
 
         let mut rx_conf: rte_eth_rxconf = unsafe { MaybeUninit::zeroed().assume_init() };
         rx_conf.rx_thresh.pthresh = rx_pthresh;
@@ -346,8 +344,8 @@ impl DPDKRuntime {
                 let mut link: MaybeUninit<rte_eth_link> = MaybeUninit::zeroed();
                 rte_eth_link_get_nowait(port_id, link.as_mut_ptr());
                 let link = link.assume_init();
-                if link.link_status() as u32 == ETH_LINK_UP {
-                    let duplex = if link.link_duplex() as u32 == ETH_LINK_FULL_DUPLEX {
+                if link.link_status() as u32 == RTE_ETH_LINK_UP {
+                    let duplex = if link.link_duplex() as u32 == RTE_ETH_LINK_FULL_DUPLEX {
                         "full"
                     } else {
                         "half"
