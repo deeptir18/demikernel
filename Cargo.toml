@@ -49,7 +49,7 @@ x86 = "0.51.0"
 
 # Demikernel Organization
 liburing = { git = "https://github.com/demikernel/liburing-rs", rev = "780827ee3f805d94f9909bd47cd925ee8476a64b", optional = true}
-dpdk-rs = { git = "https://github.com/demikernel/dpdk-rs", rev = "7d75ce6db61351d2a06fa3d84bd0af3ec017166d", optional = true }
+dpdk-rs = { git = "https://github.com/deeptir18/dpdk-rs", rev = "8044b245c643de29fc3a1edb33e37f33a904d73d", optional = true}
 
 #=======================================================================================================================
 # Targets
