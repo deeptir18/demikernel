@@ -9,12 +9,12 @@ use crate::{
         network::types::MacAddress,
     },
 };
-use ::byteorder::{
+use byteorder::{
     ByteOrder,
     NetworkEndian,
 };
-use ::libc::EBADMSG;
-use ::std::convert::{
+use libc::EBADMSG;
+use std::convert::{
     TryFrom,
     TryInto,
 };
@@ -53,6 +53,13 @@ impl Ethernet2Header {
         let hdr_buf = &buf[..ETHERNET2_HEADER_SIZE];
         let dst_addr = MacAddress::from_bytes(&hdr_buf[0..6]);
         let src_addr = MacAddress::from_bytes(&hdr_buf[6..12]);
+        debug!(
+            "Received ethernet frame with address, src: {:?}, dst: {:?}, ether_type: {}",
+            src_addr,
+            dst_addr,
+            NetworkEndian::read_u16(&hdr_buf[12..14])
+        );
+
         let ether_type = EtherType2::try_from(NetworkEndian::read_u16(&hdr_buf[12..14]))?;
         let hdr = Self {
             dst_addr,
@@ -69,6 +76,10 @@ impl Ethernet2Header {
         buf[0..6].copy_from_slice(&self.dst_addr.octets());
         buf[6..12].copy_from_slice(&self.src_addr.octets());
         NetworkEndian::write_u16(&mut buf[12..14], self.ether_type as u16);
+        debug!(
+            "Sending ethernet frame with address, src: {:?}, dst: {:?}, ether_type: {}",
+            self.src_addr, self.dst_addr, self.ether_type as u16,
+        );
     }
 
     pub fn dst_addr(&self) -> MacAddress {
