@@ -28,7 +28,7 @@ use crate::{
         QToken,
     },
 };
-use ::std::{
+use std::{
     env,
     net::SocketAddrV4,
     time::SystemTime,
@@ -100,7 +100,7 @@ impl LibOS {
         }
     }
 
-    /// Waits on a pending operation in an I/O queue.
+    /// Waits on a pending operation in an I/O queue
     #[deprecated]
     pub fn wait2(&mut self, qt: QToken) -> Result<(QDesc, OperationResult), Fail> {
         match self {

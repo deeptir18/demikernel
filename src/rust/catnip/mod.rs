@@ -39,7 +39,7 @@ use crate::{
         SchedulerHandle,
     },
 };
-use ::std::{
+use std::{
     net::SocketAddrV4,
     ops::{
         Deref,

@@ -11,8 +11,11 @@ mod queue;
 
 pub use self::{
     memory::{
+        datapath_buffer_t,
+        datapath_metadata_t,
         demi_sgarray_t,
         demi_sgaseg_t,
+        MempoolId,
         DEMI_SGARRAY_MAXLEN,
     },
     ops::{

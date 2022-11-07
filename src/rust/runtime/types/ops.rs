@@ -8,10 +8,13 @@
 //==============================================================================
 
 use crate::runtime::types::{
-    memory::demi_sgarray_t,
+    memory::{
+        datapath_metadata_t,
+        demi_sgarray_t,
+    },
     queue::demi_qtoken_t,
 };
-use ::libc::{
+use libc::{
     c_int,
     sockaddr,
 };
@@ -44,6 +47,7 @@ pub struct demi_accept_result_t {
 pub union demi_qr_value_t {
     pub sga: demi_sgarray_t,
     pub ares: demi_accept_result_t,
+    pub qr_metadata: datapath_metadata_t,
 }
 
 /// Result

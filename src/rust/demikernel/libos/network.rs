@@ -8,13 +8,16 @@
 use crate::runtime::{
     fail::Fail,
     types::{
+        datapath_buffer_t,
+        datapath_metadata_t,
         demi_qresult_t,
         demi_sgarray_t,
+        MempoolId,
     },
     QDesc,
     QToken,
 };
-use ::std::{
+use std::{
     net::SocketAddrV4,
     time::SystemTime,
 };
@@ -315,5 +318,56 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.sgafree(sga),
         }
+    }
+
+    /// Pops data from a socket. Writes result into datapath metadata.
+    pub fn pop_metadata(&mut self, sockqd: QDesc) -> Result<QToken, Fail> {
+        unimplemented!();
+    }
+
+    /// Will change depending on the cornflakes API
+    /// Pushes a vector of metadata objects to send with scatter-gather.
+    pub fn push_metadata_vec(&self, sockqd: QDesc, metadata_vec: &Vec<datapath_metadata_t>) -> Result<QToken, Fail> {
+        unimplemented!();
+    }
+
+    /// Recovers metadata from an arbitrary pointer.
+    pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
+        unimplemented!();
+    }
+
+    /// Turns datapath buffer into metadata object.
+    pub fn get_metadata_from_buffer(&self, buffer: datapath_buffer_t) -> Result<datapath_metadata_t, Fail> {
+        unimplemented!();
+    }
+
+    /// Adds a memory pool in datapath's underlying allocator.
+    pub fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<MempoolId, Fail> {
+        unimplemented!();
+    }
+
+    /// Allocates buffer for application to use.
+    pub fn allocate_buffer(&mut self, size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
+        unimplemented!();
+    }
+
+    /// Allocates tx buffer for application to use.
+    pub fn allocate_tx_buffer(&mut self) -> Result<Option<datapath_buffer_t>, Fail> {
+        unimplemented!();
+    }
+
+    /// Decrements ref count or drops datapath buffer manually.
+    pub fn drop_buffer(&mut self, datapath_buffer: datapath_buffer_t) -> Result<(), Fail> {
+        unimplemented!();
+    }
+
+    /// Decrements ref count on underlying datapath buffer and drops if necessary.
+    pub fn drop_metadata(&mut self, datapath_metadata: datapath_metadata_t) -> Result<(), Fail> {
+        unimplemented!();
+    }
+
+    /// Clones underlying metadata and increments the reference count.
+    pub fn clone_metadata(&self, datapath_metadata: &datapath_metadata_t) -> Result<datapath_metadata_t, Fail> {
+        unimplemented!();
     }
 }
