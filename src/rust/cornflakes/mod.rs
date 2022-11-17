@@ -14,6 +14,7 @@ use crate::{
         },
     },
 };
+use std::{default::Default, marker::PhantomData, marker::Sized, ops::Index, slice::Iter, str};
 use bitmaps::Bitmap;
 use byteorder::{ByteOrder, LittleEndian};
 use anyhow::{
@@ -29,6 +30,19 @@ pub const SIZE_FIELD: usize = 4;
 pub const OFFSET_FIELD: usize = 4;
 /// u32 at beginning representing bitmap size in bytes
 pub const BITMAP_LENGTH_FIELD: usize = 4;
+
+
+#[inline]
+pub fn read_size_and_offset(
+    offset: usize,
+    buffer: &datapath_metadata_t,
+) -> Result<(usize, usize), Error> {
+    let forward_pointer = ForwardPointer(buffer.as_ref(), offset);
+    Ok((
+        forward_pointer.get_size() as usize,
+        forward_pointer.get_offset() as usize,
+    ))
+}
 
 struct ForwardPointer<'a>(&'a [u8], usize);
 
@@ -192,6 +206,7 @@ pub struct CopyContextRef {
     // from data
     len: usize,
 }
+
 impl CopyContextRef {
     pub fn new(
         datapath_buffer: datapath_buffer_t,
@@ -234,25 +249,21 @@ impl CopyContextRef {
     }
 }
 
-// Basic byte array representation in Cornflakes
-pub enum CFBytes {
-    /// Either directly references a segment for zero-copy
-    RefCounted(datapath_metadata_t),
-    /// Or references the user provided copy context
-    Copied(CopyContextRef),
-    // Raw(&'raw [u8]),
-}
-
 type CallbackEntryState = ();
 
-pub trait HybridSgaHdr: AsRef<[u8]> {
+pub trait HybridSgaHdr {
     const NUMBER_OF_FIELDS: usize = 1;
 
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
 
     const NUM_U32_BITMAPS: usize = 0;
 
-    #[inline]
+    /// New 'default'
+    fn new_in() -> Self
+    where
+        Self: Sized;
+
+        #[inline]
     fn num_zero_copy_scatter_gather_entries(&self) -> usize;
     
     fn get_bitmap_itermut(&mut self) -> std::slice::IterMut<Bitmap<32>> {
@@ -293,6 +304,11 @@ pub trait HybridSgaHdr: AsRef<[u8]> {
         for bitmap in self.get_bitmap_itermut() {
             *bitmap &= Bitmap::<32>::new();
         }
+    }
+
+    #[inline]
+    fn is_list(&self) -> bool {
+        false
     }
 
     fn serialize_bitmap(&self, header: &mut [u8], offset: usize) {
@@ -439,7 +455,16 @@ impl ArenaDatapathSga {
     }
 }
 
-impl CFBytes {
+// Basic byte array representation in Cornflakes
+pub enum CFBytes<'raw> {
+    /// Either directly references a segment for zero-copy
+    RefCounted(datapath_metadata_t),
+    /// Or references the user provided copy context
+    Copied(CopyContextRef),
+    Raw(&'raw [u8]),
+}
+
+impl<'raw> CFBytes<'raw> {
     pub fn new(
         ptr: &[u8],
         network_lib_os: &mut NetworkLibOS,
@@ -456,17 +481,29 @@ impl CFBytes {
         }
     }
 
-    fn as_ref(&self) -> &[u8] {
+    pub fn as_ref(&self) -> &[u8] {
         match self {
             CFBytes::RefCounted(m) => m.as_ref(),
             CFBytes::Copied(copy_context_ref) => copy_context_ref.as_ref(),
+            CFBytes::Raw(raw_ref) => raw_ref,
         }
+    }
+}
+
+impl<'raw> HybridSgaHdr for CFBytes<'raw> {
+    #[inline]
+    fn new_in() -> Self
+    where
+        Self: Sized,
+    {
+        CFBytes::Raw(&[])
     }
 
     fn num_zero_copy_scatter_gather_entries(&self) -> usize {
         match self {
             CFBytes::RefCounted(_) => 1,
             CFBytes::Copied(_) => 0,
+            CFBytes::Raw(_) => 0, 
         }
     }
     
@@ -513,6 +550,7 @@ impl CFBytes {
                 // );
                 Ok(copy_context_ref.len())
             }
+            CFBytes::Raw(_) => {unimplemented!();}
         }
     }
 
@@ -551,6 +589,7 @@ impl CFBytes {
                 //     "Filling in dpseg for copy context cf bytes"
                 // );
             }
+            CFBytes::Raw(_) => {unimplemented!();}
         }
         Ok(())
     }
@@ -576,6 +615,296 @@ impl CFBytes {
 }
 // add serializers, add a new function, add drop, 
 
+
+pub struct VariableList<T>
+where
+    T: HybridSgaHdr + Clone + std::fmt::Debug,
+{
+    num_space: usize,
+    num_set: usize,
+    elts: Vec<T>,
+    // _phantom_data: PhantomData<D>,
+}
+
+
+impl<T> VariableList<T>
+where
+    T: HybridSgaHdr + Clone + std::fmt::Debug,
+{
+    #[inline]
+    pub fn init(num: usize) -> VariableList<T> {
+        let entries = Vec::from_iter(
+            std::iter::repeat(<T>::new_in()).take(num),
+            // arena,
+        );
+        VariableList {
+            num_space: num,
+            num_set: 0,
+            elts: entries,
+        }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::iter::Take<Iter<T>> {
+        self.elts.iter().take(self.num_set)
+    }
+
+    #[inline]
+    pub fn append(&mut self, val: T) {
+        if self.elts.len() == self.num_set {
+            self.elts.push(val);
+        } else {
+            self.elts[self.num_set] = val;
+        }
+        self.num_set += 1;
+    }
+
+    #[inline]
+    pub fn replace(&mut self, idx: usize, val: T) {
+        self.elts[idx] = val;
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.num_set
+    }
+}
+
+impl<T> Index<usize> for VariableList<T>
+where
+    T: HybridSgaHdr + Clone + std::fmt::Debug,
+{
+    type Output = T;
+    fn index(&self, idx: usize) -> &Self::Output {
+        &self.elts[idx]
+    }
+}
+
+impl<T> HybridSgaHdr for VariableList<T>
+where
+    T: HybridSgaHdr + Clone + std::fmt::Debug,
+{
+    const CONSTANT_HEADER_SIZE: usize = OFFSET_FIELD + SIZE_FIELD;
+
+    const NUMBER_OF_FIELDS: usize = 1;
+
+    const NUM_U32_BITMAPS: usize = 0;
+
+    #[inline]
+    fn new_in() -> Self
+    where
+        Self: Sized,
+    {
+        VariableList {
+            num_space: 0,
+            num_set: 0,
+            elts: Vec::new(),
+        }
+    }
+    #[inline]
+    fn get_mut_bitmap_entry(&mut self, _offset: usize) -> &mut Bitmap<32> {
+        unreachable!();
+    }
+
+    #[inline]
+    fn get_bitmap_entry(&self, _offset: usize) -> &Bitmap<32> {
+        unreachable!();
+    }
+
+    #[inline]
+    fn dynamic_header_size(&self) -> usize {
+        self.elts
+            .iter()
+            .map(|x| x.dynamic_header_size() + T::CONSTANT_HEADER_SIZE)
+            .sum()
+    }
+
+    #[inline]
+    fn dynamic_header_start(&self) -> usize {
+        self.elts
+            .iter()
+            .take(self.num_set)
+            .map(|_x| T::CONSTANT_HEADER_SIZE)
+            .sum()
+    }
+
+    #[inline]
+    fn num_zero_copy_scatter_gather_entries(&self) -> usize {
+        self.elts
+            .iter()
+            .take(self.num_set)
+            .map(|x| x.num_zero_copy_scatter_gather_entries())
+            .sum()
+    }
+
+    #[inline]
+    fn is_list(&self) -> bool {
+        true
+    }
+    
+    #[inline]
+    fn iterate_over_entries<F>(
+        &self,
+        copy_context: &mut CopyContext,
+        header_len: usize,
+        header_buffer: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_entry_ptr: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut CallbackEntryState,
+    ) -> Result<usize, Error>
+    where
+        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+    {
+        {
+            let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
+            forward_pointer.write_size(self.num_set as u32);
+            forward_pointer.write_offset(dynamic_header_offset as u32);
+        }
+
+        // tracing::debug!(
+        //     num_set = self.num_set,
+        //     dynamic_offset = dynamic_header_offset,
+        //     num_set = self.num_set,
+        //     "Writing in forward pointer at position {}",
+        //     constant_header_offset
+        // );
+
+        let mut ret = 0;
+        let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_start();
+        for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
+            if elt.dynamic_header_size() != 0 {
+                let mut forward_offset = MutForwardPointer(
+                    header_buffer,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                );
+                // TODO: might be unnecessary
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                ret += elt.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    header_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    cur_entry_ptr,
+                    datapath_callback,
+                    callback_state,
+                )?;
+            } else {
+                // tracing::debug!(
+                //     constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                //     "Calling inner serialize recursively in list inner serialize"
+                // );
+                ret += elt.iterate_over_entries(
+                    copy_context,
+                    header_len,
+                    header_buffer,
+                    dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off,
+                    cur_entry_ptr,
+                    datapath_callback,
+                    callback_state,
+                )?;
+            }
+            cur_dynamic_off += elt.dynamic_header_size();
+        }
+        Ok(ret)
+    }
+
+    #[inline]
+    fn inner_serialize<'a>(
+        &self,
+        datapath: &mut NetworkLibOS,
+        header_buffer: &mut [u8],
+        constant_header_offset: usize,
+        dynamic_header_start: usize,
+        copy_context: &mut CopyContext,
+        zero_copy_scatter_gather_entries: &mut [datapath_metadata_t],
+        ds_offset: &mut usize,
+    ) -> Result<(), Error>    {
+        {
+            let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
+            forward_pointer.write_size(self.num_set as u32);
+            forward_pointer.write_offset(dynamic_header_start as u32);
+        }
+
+        let mut sge_idx = 0;
+        let mut cur_dynamic_off = dynamic_header_start + self.dynamic_header_start();
+        for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
+            let required_sges = elt.num_zero_copy_scatter_gather_entries();
+            if elt.dynamic_header_size() != 0 {
+                let mut forward_offset = MutForwardPointer(
+                    header_buffer,
+                    dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
+                );
+                // TODO: might be unnecessary
+                forward_offset.write_size(elt.dynamic_header_size() as u32);
+                forward_offset.write_offset(cur_dynamic_off as u32);
+                elt.inner_serialize(
+                    datapath,
+                    header_buffer,
+                    cur_dynamic_off,
+                    cur_dynamic_off + elt.dynamic_header_start(),
+                    copy_context,
+                    &mut zero_copy_scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
+                    ds_offset,
+                )?;
+            } else {
+                elt.inner_serialize(
+                    datapath,
+                    header_buffer,
+                    dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
+                    cur_dynamic_off,
+                    copy_context,
+                    &mut zero_copy_scatter_gather_entries[sge_idx..(sge_idx + required_sges)],
+                    ds_offset,
+                )?;
+            }
+            sge_idx += required_sges;
+            cur_dynamic_off += elt.dynamic_header_size();
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn inner_deserialize(
+        &mut self,
+        buffer: &datapath_metadata_t,
+        constant_offset: usize,
+        buffer_offset: usize,
+        // arena: &'arena bumpalo::Bump,
+    ) -> Result<(), Error> {
+        let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset + buffer_offset);
+        let size = forward_pointer.get_size() as usize;
+        let dynamic_offset = forward_pointer.get_offset() as usize;
+
+        self.num_set = size;
+        //self.elts = bumpalo::vec![in &arena; T::new_in(arena); size];
+        if self.elts.len() < size {
+            self.elts.resize(size, T::new_in());
+        }
+        self.num_space = size;
+
+        for (i, elt) in self.elts.iter_mut().take(size).enumerate() {
+            if elt.dynamic_header_size() == 0 {
+                elt.inner_deserialize(
+                    buffer,
+                    dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                    buffer_offset,
+                )?;
+            } else {
+                let (_size, dynamic_off) = read_size_and_offset(
+                    dynamic_offset + i * T::CONSTANT_HEADER_SIZE,
+                    buffer,
+                )?;
+                elt.inner_deserialize(buffer, dynamic_off, buffer_offset)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 pub type MsgID = u32;
 pub type ConnID = usize;
