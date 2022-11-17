@@ -352,7 +352,7 @@ impl NetworkLibOS {
     }
 
     /// Allocates tx buffer for application to use.
-    pub fn allocate_tx_buffer(&mut self) -> Result<Option<datapath_buffer_t>, Fail> {
+    pub fn allocate_tx_buffer(&mut self) -> Result<(Option<datapath_buffer_t>, usize), Fail> {
         unimplemented!();
     }
 
