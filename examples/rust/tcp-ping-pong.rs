@@ -22,6 +22,18 @@ use ::std::{
     str::FromStr,
 };
 
+#[cfg(target_os = "windows")]
+pub const AF_INET: i32 = windows::Win32::Networking::WinSock::AF_INET.0 as i32;
+
+#[cfg(target_os = "windows")]
+pub const SOCK_STREAM: i32 = windows::Win32::Networking::WinSock::SOCK_STREAM as i32;
+
+#[cfg(target_os = "linux")]
+pub const AF_INET: i32 = libc::AF_INET;
+
+#[cfg(target_os = "linux")]
+pub const SOCK_STREAM: i32 = libc::SOCK_STREAM;
+
 #[cfg(feature = "profiler")]
 use ::demikernel::perftools::profiler;
 
@@ -69,10 +81,9 @@ fn server(local: SocketAddrV4) -> Result<()> {
         Ok(libos) => libos,
         Err(e) => panic!("failed to initialize libos: {:?}", e.cause),
     };
-    let nrounds: usize = 1024;
 
     // Setup peer.
-    let sockqd: QDesc = match libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0) {
+    let sockqd: QDesc = match libos.socket(AF_INET, SOCK_STREAM, 0) {
         Ok(qd) => qd,
         Err(e) => panic!("failed to create socket: {:?}", e.cause),
     };
@@ -87,54 +98,64 @@ fn server(local: SocketAddrV4) -> Result<()> {
         Err(e) => panic!("listen failed: {:?}", e.cause),
     };
 
-    // Accept incoming connections.
-    let qt: QToken = match libos.accept(sockqd) {
-        Ok(qt) => qt,
-        Err(e) => panic!("accept failed: {:?}", e.cause),
-    };
-    let qd: QDesc = match libos.wait(qt) {
-        Ok(qr) if qr.qr_opcode == demi_opcode_t::DEMI_OPC_ACCEPT => unsafe { qr.qr_value.ares.qd.into() },
-        Err(e) => panic!("operation failed: {:?}", e.cause),
-        _ => panic!("unexpected result"),
-    };
+    let mut nr_pending: u64 = 0;
+    let mut qtokens: Vec<QToken> = Vec::new();
 
-    // Perform multiple ping-pong rounds.
-    for i in 0..nrounds {
-        // Pop data.
-        let qt: QToken = match libos.pop(qd) {
-            Ok(qt) => qt,
-            Err(e) => panic!("pop failed: {:?}", e.cause),
-        };
-        let sga: demi_sgarray_t = match libos.wait(qt) {
-            Ok(qr) if qr.qr_opcode == demi_opcode_t::DEMI_OPC_POP => unsafe { qr.qr_value.sga },
-            Err(e) => panic!("operation failed: {:?}", e.cause),
-            _ => panic!("unexpected result"),
-        };
-
-        // Sanity check received data.
-        let ptr: *mut u8 = sga.sga_segs[0].sgaseg_buf as *mut u8;
-        let len: usize = sga.sga_segs[0].sgaseg_len as usize;
-        let slice: &mut [u8] = unsafe { slice::from_raw_parts_mut(ptr, len) };
-        for x in slice {
-            assert!(*x == FILL_CHAR);
+    loop {
+        if nr_pending < 1 {
+            // Accept incoming connections.
+            let qt: QToken = match libos.accept(sockqd) {
+                Ok(qt) => qt,
+                Err(e) => panic!("accept failed: {:?}", e.cause),
+            };
+            nr_pending += 1;
+            qtokens.push(qt);
         }
 
-        // Push data.
-        let qt: QToken = match libos.push(qd, &sga) {
-            Ok(qt) => qt,
-            Err(e) => panic!("push failed: {:?}", e.cause),
-        };
-        match libos.wait(qt) {
-            Ok(qr) if qr.qr_opcode == demi_opcode_t::DEMI_OPC_PUSH => (),
-            Err(e) => panic!("operation failed: {:?}", e.cause),
-            _ => panic!("unexpected result"),
-        };
-        match libos.sgafree(sga) {
-            Ok(_) => {},
-            Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
-        }
+        let (i, qr) = libos.wait_any(&qtokens).unwrap();
+        qtokens.remove(i);
 
-        println!("pong {:?}", i);
+        // Parse the result.
+        match qr.qr_opcode {
+            demi_opcode_t::DEMI_OPC_ACCEPT => {
+                // Pop first packet.
+                let qd: QDesc = unsafe { qr.qr_value.ares.qd.into() };
+                let qt: QToken = match libos.pop(qd) {
+                    Ok(qt) => qt,
+                    Err(e) => panic!("pop failed: {:?}", e.cause),
+                };
+                nr_pending -= 1;
+                qtokens.push(qt);
+            },
+            // Pop completed.
+            demi_opcode_t::DEMI_OPC_POP => {
+                let qd: QDesc = qr.qr_qd.into();
+                let sga: demi_sgarray_t = unsafe { qr.qr_value.sga };
+
+                // Push data.
+                let qt: QToken = match libos.push(qd, &sga) {
+                    Ok(qt) => qt,
+                    Err(e) => panic!("push failed: {:?}", e.cause),
+                };
+                qtokens.push(qt);
+                match libos.sgafree(sga) {
+                    Ok(_) => {},
+                    Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
+                }
+            },
+            // Push completed.
+            demi_opcode_t::DEMI_OPC_PUSH => {
+                // Pop another packet.
+                let qd: QDesc = qr.qr_qd.into();
+                let qt: QToken = match libos.pop(qd) {
+                    Ok(qt) => qt,
+                    Err(e) => panic!("pop failed: {:?}", e.cause),
+                };
+                qtokens.push(qt);
+            },
+            demi_opcode_t::DEMI_OPC_FAILED => panic!("operation failed"),
+            _ => panic!("unexpected result"),
+        }
     }
 
     #[cfg(feature = "profiler")]
@@ -160,7 +181,7 @@ fn client(remote: SocketAddrV4) -> Result<()> {
     let nrounds: usize = 1024;
 
     // Setup peer.
-    let sockqd: QDesc = match libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0) {
+    let sockqd: QDesc = match libos.socket(AF_INET, SOCK_STREAM, 0) {
         Ok(qd) => qd,
         Err(e) => panic!("failed to create socket: {:?}", e.cause),
     };
@@ -262,3 +283,4 @@ pub fn main() -> Result<()> {
 
     Ok(())
 }
+
