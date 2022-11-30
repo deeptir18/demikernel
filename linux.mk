@@ -169,7 +169,7 @@ clean: clean-examples clean-tests
 
 #=======================================================================================================================
 
-export CONFIG_PATH ?= $(HOME)/config.yaml
+export CONFIG_PATH ?= /proj/demeter-PG0/sanjaris/config/demikernel_server.yaml
 export MTU ?= 1500
 export MSS ?= 1500
 export PEER ?= server

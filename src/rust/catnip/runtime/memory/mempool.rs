@@ -65,7 +65,7 @@ impl MemoryPool {
     /// Allocates a mbuf in the target memory pool.
     pub fn alloc_mbuf(&self, size: Option<usize>) -> Result<*mut rte_mbuf, Fail> {
         // TODO: Drop the following warning once DPDK memory management is more stable.
-        warn!("allocating mbuf from DPDK pool");
+        debug!("allocating mbuf from DPDK pool");
 
         // Allocate mbuf.
         let mut mbuf_ptr: *mut rte_mbuf = unsafe { rte_pktmbuf_alloc(self.pool) };

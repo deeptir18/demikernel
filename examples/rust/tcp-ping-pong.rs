@@ -8,7 +8,11 @@
 use ::anyhow::Result;
 use ::demikernel::{
     demi_sgarray_t,
-    runtime::types::demi_opcode_t,
+    runtime::types::{
+        datapath_metadata_t,
+        datapath_buffer_t,
+        demi_opcode_t,
+    },
     LibOS,
     LibOSName,
     QDesc,
@@ -21,6 +25,7 @@ use ::std::{
     slice,
     str::FromStr,
 };
+
 
 #[cfg(target_os = "windows")]
 pub const AF_INET: i32 = windows::Win32::Networking::WinSock::AF_INET.0 as i32;
@@ -72,7 +77,7 @@ fn mksga(libos: &mut LibOS, size: usize, value: u8) -> demi_sgarray_t {
 // server()
 //======================================================================================================================
 
-fn server(local: SocketAddrV4) -> Result<()> {
+fn server(local: SocketAddrV4, mode: String) -> Result<()> {
     let libos_name: LibOSName = match LibOSName::from_env() {
         Ok(libos_name) => libos_name.into(),
         Err(e) => panic!("{:?}", e),
@@ -257,8 +262,9 @@ fn client(remote: SocketAddrV4) -> Result<()> {
 fn usage(program_name: &String) {
     println!("Usage: {} MODE address\n", program_name);
     println!("Modes:\n");
-    println!("  --client    Run program in client mode.\n");
-    println!("  --server    Run program in server mode.\n");
+    println!("  --client       Run program in client mode.\n");
+    println!("  --server       Run program in server mode.\n");
+    println!("  --packet_type  Type of serialization format the packets should be created in (cf_0c/cf_1c/flatbuffer/<None>).\n");
 }
 
 //======================================================================================================================
@@ -268,6 +274,16 @@ fn usage(program_name: &String) {
 pub fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
+    let mut mode: String = "none".to_string();
+    if args.len() >= 5 {
+        if args[3] == "--packet_type" {
+            mode = args[4].to_string();
+        }
+        if !(mode.contains("cf_0c") || mode.contains("cf_1c") || mode.contains("flatbuffer") || mode.contains("none")) {
+            mode = "none".to_string();
+        }
+    }
+    println!("Mode {}", mode);
     if args.len() >= 3 {
         let sockaddr: SocketAddrV4 = SocketAddrV4::from_str(&args[2])?;
         if args[1] == "--server" {
