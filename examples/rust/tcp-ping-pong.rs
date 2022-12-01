@@ -7,6 +7,16 @@
 
 use ::anyhow::Result;
 use ::demikernel::{
+    cornflakes::{
+        CopyContext,
+        HybridSgaHdr,
+        CFBytes,
+        VariableList,
+        generated_objects::{
+            SingleBufferCF,
+            ListCF,
+        },
+    },
     demi_sgarray_t,
     runtime::types::{
         datapath_metadata_t,
@@ -18,6 +28,8 @@ use ::demikernel::{
     QDesc,
     QToken,
 };
+
+use byteorder::{BigEndian, ByteOrder};
 use ::std::{
     env,
     net::SocketAddrV4,
@@ -42,12 +54,19 @@ pub const SOCK_STREAM: i32 = libc::SOCK_STREAM;
 #[cfg(feature = "profiler")]
 use ::demikernel::perftools::profiler;
 
+pub enum ModeCodeT {
+    MODE_CF0 = 0,
+    MODE_CF1,
+    MODE_FB,
+    MODE_NONE,
+}
 //======================================================================================================================
 // Constants
 //======================================================================================================================
 
 const BUFFER_SIZE: usize = 64;
 const FILL_CHAR: u8 = 0x65;
+pub const REQ_TYPE_SIZE: usize = 4;
 
 //======================================================================================================================
 // mksga()
@@ -73,11 +92,29 @@ fn mksga(libos: &mut LibOS, size: usize, value: u8) -> demi_sgarray_t {
     sga
 }
 
+pub enum SimpleMessageType {
+    /// Message with a single field
+    Single,
+    /// List with a variable number of elements
+    List(usize),
+}
+
+fn read_message_type(packet: &datapath_metadata_t) -> Result<SimpleMessageType> {
+    let buf = &packet.as_ref();
+    let msg_type = &buf[0..2];
+    let size = &buf[2..4];
+
+    match (BigEndian::read_u16(msg_type), BigEndian::read_u16(size)) {
+        (0, 0) => Ok(SimpleMessageType::Single),
+        (1, size) => Ok(SimpleMessageType::List(size as _)),
+        (_, _) => {unimplemented!();},
+    }
+}
+
 //======================================================================================================================
 // server()
 //======================================================================================================================
-
-fn server(local: SocketAddrV4, mode: String) -> Result<()> {
+fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
     let libos_name: LibOSName = match LibOSName::from_env() {
         Ok(libos_name) => libos_name.into(),
         Err(e) => panic!("{:?}", e),
@@ -117,6 +154,8 @@ fn server(local: SocketAddrV4, mode: String) -> Result<()> {
             qtokens.push(qt);
         }
 
+        // The qresult has a datapath_metadata_t variable too alongside the sga_buffer optionally
+        // so do we need to pop a vec of received packets, or is it ok to deserialize packet by packet? 
         let (i, qr) = libos.wait_any(&qtokens).unwrap();
         qtokens.remove(i);
 
@@ -134,19 +173,74 @@ fn server(local: SocketAddrV4, mode: String) -> Result<()> {
             },
             // Pop completed.
             demi_opcode_t::DEMI_OPC_POP => {
-                let qd: QDesc = qr.qr_qd.into();
-                let sga: demi_sgarray_t = unsafe { qr.qr_value.sga };
+                match mode {
+                    // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
+                    ModeCodeT::MODE_CF0 => {
+                        let qd: QDesc = qr.qr_qd.into();
+                        let pkt: datapath_metadata_t  = unsafe { qr.qr_value.qr_metadata };
+                        // Deserialize.
+                        let mut copy_context = CopyContext::new(&mut libos)?;
+                        let message_type = read_message_type(&pkt)?;
 
-                // Push data.
-                let qt: QToken = match libos.push(qd, &sga) {
-                    Ok(qt) => qt,
-                    Err(e) => panic!("push failed: {:?}", e.cause),
-                };
-                qtokens.push(qt);
-                match libos.sgafree(sga) {
-                    Ok(_) => {},
-                    Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
+                        match message_type {
+                            SimpleMessageType::Single => {
+                                let mut single_deser = SingleBufferCF::new_in();
+                                let mut single_ser = SingleBufferCF::new_in();
+                                {
+                                    single_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                                }
+                                {
+                                    single_ser.set_message(CFBytes::new(
+                                        single_deser.get_message().as_ref(),
+                                        &mut libos,
+                                        &mut copy_context,
+                                    ));
+                                    // tracing::debug!(set_msg =? single_ser.get_message().as_ref());
+                                }
+                                // Push data.
+                                let qt: QToken = match libos.push_cornflakes_obj(
+                                    qd,
+                                    &mut copy_context,
+                                    single_ser,
+                                ) {
+                                    Ok(qt) => qt,
+                                    Err(e) => panic!("failed to push CF object: {:?}", e),
+                                };
+                                qtokens.push(qt);
+                                match libos.release_cornflakes_obj(&mut copy_context, single_ser) {
+                                    Ok(_) => {},
+                                    Err(e) => panic!("failed to release CF object: {:?}", e),
+                                }; 
+                            },
+                            SimpleMessageType::List(_size) => {
+                                unimplemented!();
+                            }
+                        }                      
+                    },
+                   // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
+                   ModeCodeT::MODE_NONE => {
+                        let qd: QDesc = qr.qr_qd.into();
+                        let sga: demi_sgarray_t = unsafe { qr.qr_value.sga };
+        
+                        // Push data.
+                        let qt: QToken = match libos.push(qd, &sga) {
+                            Ok(qt) => qt,
+                            Err(e) => panic!("push failed: {:?}", e.cause),
+                        };
+                        qtokens.push(qt);
+                        match libos.sgafree(sga) {
+                            Ok(_) => {},
+                            Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
+                        }
+                    },
+                    ModeCodeT::MODE_CF1 => {
+                        unimplemented!();
+                    },
+                    ModeCodeT::MODE_FB => {
+                        unimplemented!();
+                    },
                 }
+
             },
             // Push completed.
             demi_opcode_t::DEMI_OPC_PUSH => {
@@ -271,23 +365,31 @@ fn usage(program_name: &String) {
 // main()
 //======================================================================================================================
 
+fn convert(mode_name: String) -> ModeCodeT {
+    if mode_name.contains("cf_0c") {
+        return ModeCodeT::MODE_CF0;
+    } else if mode_name.contains("cf_1c") {
+        return ModeCodeT::MODE_CF1;
+    } else if mode_name.contains("flatbuffer") {
+        return ModeCodeT::MODE_FB;
+    } 
+    return ModeCodeT::MODE_NONE;
+}
+
 pub fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    let mut mode: String = "none".to_string();
+    let mut mode: ModeCodeT = ModeCodeT::MODE_NONE;
     if args.len() >= 5 {
         if args[3] == "--packet_type" {
-            mode = args[4].to_string();
-        }
-        if !(mode.contains("cf_0c") || mode.contains("cf_1c") || mode.contains("flatbuffer") || mode.contains("none")) {
-            mode = "none".to_string();
+            mode = convert(args[4].to_string());
         }
     }
-    println!("Mode {}", mode);
+    // println!("Mode {}", mode);
     if args.len() >= 3 {
         let sockaddr: SocketAddrV4 = SocketAddrV4::from_str(&args[2])?;
         if args[1] == "--server" {
-            let ret: Result<()> = server(sockaddr);
+            let ret: Result<()> = server(sockaddr, mode);
             return ret;
         } else if args[1] == "--client" {
             let ret: Result<()> = client(sockaddr);

@@ -21,6 +21,10 @@ use std::{
     net::SocketAddrV4,
     time::SystemTime,
 };
+use crate::cornflakes::{
+    HybridSgaHdr,
+    CopyContext,
+};
 
 #[cfg(feature = "catcollar-libos")]
 use crate::catcollar::CatcollarLibOS;
@@ -52,6 +56,9 @@ pub enum NetworkLibOS {
     #[cfg(feature = "catnip-libos")]
     Catnip(CatnipLibOS),
 }
+
+pub type MsgID = u32;
+pub type ConnID = usize;
 
 //======================================================================================================================
 // Associated Functions
@@ -320,7 +327,8 @@ impl NetworkLibOS {
         }
     }
 
-    /// Pops data from a socket. Writes result into datapath metadata.
+    /// Pops data from a socket. Writes result into datapath metadata. Should take care of waiting for the packet too.
+    /// return receivedPkt?
     pub fn pop_metadata(&mut self, sockqd: QDesc) -> Result<QToken, Fail> {
         unimplemented!();
     }
@@ -362,12 +370,38 @@ impl NetworkLibOS {
     }
 
     /// Decrements ref count on underlying datapath buffer and drops if necessary.
-    pub fn drop_metadata(&mut self, datapath_metadata: datapath_metadata_t) -> Result<(), Fail> {
+    pub fn drop_metadata_vec(&mut self, metadata: datapath_metadata_t) -> Result<(), Fail> {
         unimplemented!();
     }
 
     /// Clones underlying metadata and increments the reference count.
     pub fn clone_metadata(&self, datapath_metadata: &datapath_metadata_t) -> Result<datapath_metadata_t, Fail> {
+        unimplemented!();
+    }
+
+    /// Turns ref to datapath buffer, offset and length into metadata object.
+    pub fn get_metadata_from_tx_buffer(&self, buf: &datapath_buffer_t, offset: usize, len: usize) -> Result<datapath_metadata_t, Fail> {
+        unimplemented!();
+    }
+
+    pub fn push_cornflakes_obj(
+        &mut self,
+        sockqd: QDesc, 
+        _copy_context: &mut CopyContext,
+        _cornflakes_obj: impl HybridSgaHdr,
+    ) -> Result<QToken, Fail> {
+        unimplemented!();
+    }
+
+    pub fn release_cornflakes_obj(
+        &mut self,
+        _copy_context: &mut CopyContext,
+        _cornflakes_obj: impl HybridSgaHdr,
+    ) -> Result<(), Fail> {
+        unimplemented!();
+    }
+    
+    pub fn get_copying_threshold(&self) -> usize {
         unimplemented!();
     }
 }

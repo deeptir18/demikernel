@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+pub mod generated_objects;
 
 use crate::{
     demikernel::libos::{
         LibOS,
-        network::NetworkLibOS,
     },
     runtime::{
         fail::Fail,
@@ -78,8 +78,8 @@ pub struct SerializationCopyBuf {
 }
 
 impl SerializationCopyBuf {
-    pub fn new(network_lib_os: &mut NetworkLibOS) -> Result<Self, Error> {
-        let (buf_option, max_len) = network_lib_os.allocate_tx_buffer().expect("Could not allocate tx buffer") ;
+    pub fn new(libos: &mut LibOS) -> Result<Self, Error> {
+        let (buf_option, max_len) = libos.allocate_tx_buffer().expect("Could not allocate tx buffer") ;
 
         match buf_option {
             Some(buf) => {
@@ -119,6 +119,7 @@ impl SerializationCopyBuf {
     #[inline]
     pub fn copy_context_ref(
         &self,
+        libos: &mut LibOS,
         index: usize,
         start: usize,
         len: usize,
@@ -127,7 +128,8 @@ impl SerializationCopyBuf {
         debug!(
             "Copy context ref being made"
         );
-        CopyContextRef::new(self.buf.clone(), index, start, len, total_offset)
+        let metadata_buf = libos.get_metadata_from_tx_buffer(&self.buf, start, len).expect("Could not get metadata from tx buffer");
+        CopyContextRef::new(metadata_buf, index, start, len, total_offset)
     }
 }
 
@@ -139,6 +141,19 @@ pub struct CopyContext {
 }
 
 impl CopyContext {
+
+    #[inline]
+    pub fn new(libos: &mut LibOS) -> Result<Self, Error> {
+        #[cfg(feature = "profiler")]
+        demikernel::timer!("Allocate new copy context");
+        Ok(CopyContext {
+            copy_buffers: Vec::with_capacity(1),
+            threshold: libos.get_copying_threshold(),
+            current_length: 0,
+            remaining: 0,
+        })
+    }
+
     #[inline]
     pub fn should_copy(&self, ptr: &[u8]) -> bool {
         ptr.len() < self.threshold
@@ -155,8 +170,8 @@ impl CopyContext {
     }
 
     #[inline]
-    pub fn push(&mut self, network_lib_os: &mut NetworkLibOS) -> Result<(), Error> {
-        let buf = SerializationCopyBuf::new(network_lib_os)?;
+    pub fn push(&mut self, libos: &mut LibOS) -> Result<(), Error> {
+        let buf = SerializationCopyBuf::new(libos)?;
         self.remaining = buf.remaining();
         self.copy_buffers.push(buf);
         Ok(())
@@ -165,12 +180,12 @@ impl CopyContext {
     /// Copies data into copy context.
     /// Returns (start, end) range of copy context that buffer was copied into.
     #[inline]
-    pub fn copy(&mut self, buf: &[u8], network_lib_os: &mut NetworkLibOS) -> Result<CopyContextRef, Error> {
+    pub fn copy(&mut self, buf: &[u8], libos: &mut LibOS) -> Result<CopyContextRef, Error> {
 
         let current_length = self.current_length;
         // TODO: doesn't work if buffer is > than an MTU
         if self.remaining < buf.len() {
-            self.push(network_lib_os)?;
+            self.push(libos)?;
         }
         let copy_buffers_len = self.copy_buffers.len();
         let last_buf = &mut self.copy_buffers[copy_buffers_len - 1];
@@ -185,6 +200,7 @@ impl CopyContext {
         self.current_length += written;
         self.remaining -= written;
         return Ok(last_buf.copy_context_ref(
+            libos,
             copy_buffers_len - 1,
             current_offset,
             written,
@@ -197,8 +213,7 @@ pub struct CopyContextRef {
     // which buffer amongst the multiple mtu buffers
     // pointer to the index in the copy context array
     // TODO: (remove this field) 
-    datapath_buffer: datapath_buffer_t,
-
+    datapath_metadata: datapath_metadata_t,
     index: usize,
     total_offset: usize,
     // might be redundant
@@ -207,16 +222,28 @@ pub struct CopyContextRef {
     len: usize,
 }
 
+impl Clone for CopyContextRef {
+    fn clone(&self) -> Self {
+        CopyContextRef {
+            datapath_metadata: self.datapath_metadata.clone(),
+            index: self.index,
+            start: self.start,
+            len: self.len,
+            total_offset: self.total_offset,
+        }
+    }
+}
+
 impl CopyContextRef {
     pub fn new(
-        datapath_buffer: datapath_buffer_t,
+        datapath_metadata: datapath_metadata_t,
         index: usize,
         start: usize,
         len: usize,
         total_offset: usize,
     ) -> Self {
         CopyContextRef {
-            datapath_buffer: datapath_buffer,
+            datapath_metadata: datapath_metadata,
             index: index,
             start: start,
             len: len,
@@ -224,17 +251,17 @@ impl CopyContextRef {
         }
     }
     fn as_ref(&self) -> &[u8] {
-        &self.datapath_buffer.as_ref()[self.start..(self.start + self.len)]
+        &self.datapath_metadata.as_ref()[self.start..(self.start + self.len)]
     }
 
     #[inline]
     fn total_offset(&self) -> usize {
         self.total_offset
     }
-    #[inline]
-    fn datapath_buffer(&self) -> &datapath_buffer_t {
-        &self.datapath_buffer
-    }
+    // #[inline]
+    // fn datapath_buffer(&self) -> &datapath_buffer_t {
+    //     &self.datapath_buffer
+    // }
     #[inline]
     fn index(&self) -> usize {
         self.index
@@ -263,7 +290,7 @@ pub trait HybridSgaHdr {
     where
         Self: Sized;
 
-        #[inline]
+    #[inline]
     fn num_zero_copy_scatter_gather_entries(&self) -> usize;
     
     fn get_bitmap_itermut(&mut self) -> std::slice::IterMut<Bitmap<32>> {
@@ -309,6 +336,30 @@ pub trait HybridSgaHdr {
     #[inline]
     fn is_list(&self) -> bool {
         false
+    }
+
+    /// Copies bitmap into object's bitmap, returning the space from offset that the bitmap
+    /// in the serialized header format takes.
+    fn deserialize_bitmap(
+        &mut self,
+        pkt: &datapath_metadata_t,
+        offset: usize,
+        buffer_offset: usize,
+    ) -> usize {
+        let header = pkt.as_ref();
+        let bitmap_size = LittleEndian::read_u32(
+            &header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)],
+        );
+        self.set_bitmap(
+            (0..std::cmp::min(bitmap_size, Self::NUM_U32_BITMAPS as u32) as usize).map(|i| {
+                let num = LittleEndian::read_u32(
+                    &header[(buffer_offset + offset + BITMAP_LENGTH_FIELD + i * 4)
+                        ..(buffer_offset + offset + BITMAP_LENGTH_FIELD + (i + 1) * 4)],
+                );
+                Bitmap::<32>::from_value(num)
+            }),
+        );
+        bitmap_size as usize * 4
     }
 
     fn serialize_bitmap(&self, header: &mut [u8], offset: usize) {
@@ -361,7 +412,7 @@ pub trait HybridSgaHdr {
 
     fn inner_serialize<'a>(
         &self,
-        datapath: &mut NetworkLibOS,
+        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_offset: usize,
@@ -373,7 +424,7 @@ pub trait HybridSgaHdr {
     #[inline]
     fn serialize_into_arena_datapath_sga<'a>(
         &self,
-        datapath: &mut NetworkLibOS,
+        datapath: &mut LibOS,
         mut copy_context: CopyContext,
         // arena: &'a bumpalo::Bump,
     ) -> Result<ArenaDatapathSga, Error> {
@@ -420,13 +471,13 @@ pub trait HybridSgaHdr {
     #[inline]
     fn deserialize(
         &mut self,
-        pkt: &ReceivedPkt,
+        pkt: &datapath_metadata_t,
         offset: usize,
         // arena: &'arena bumpalo::Bump,
     ) -> Result<(), Error> {
         // Right now, for deserialize we assume one contiguous buffer
-        let metadata = pkt.seg(0);
-        self.inner_deserialize(metadata, 0, offset)?;
+        // let metadata = pkt.seg(0);
+        self.inner_deserialize(pkt, 0, offset)?;
         Ok(())
     }
 }
@@ -464,20 +515,51 @@ pub enum CFBytes<'raw> {
     Raw(&'raw [u8]),
 }
 
+impl<'raw> Clone for CFBytes<'raw> {
+    fn clone(&self) -> Self {
+        match self {
+            CFBytes::RefCounted(metadata) => CFBytes::RefCounted(metadata.clone()),
+            CFBytes::Copied(copy_context_ref) => CFBytes::Copied(copy_context_ref.clone()),
+            CFBytes::Raw(raw_ref) => CFBytes::Raw(raw_ref),
+        }
+    }
+}
+
+impl<'raw> std::fmt::Debug for CFBytes<'raw> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CFBytes::RefCounted(metadata) => f
+                .debug_struct("CFBytes zero-copy")
+                // .field("metadata", metadata)
+                .finish(),
+            CFBytes::Copied(copy_context_ref) => f
+                .debug_struct("CFBytes copied")
+                // .field("metadata addr", &copy_context_ref.as_ref().as_ptr())
+                .field("start", &copy_context_ref.offset())
+                .field("len", &copy_context_ref.len())
+                .finish(),
+            CFBytes::Raw(raw_ref) => f
+                .debug_struct("CFBytes raw")
+                .field("addr", raw_ref)
+                .finish(),
+        }
+    }
+}
+
 impl<'raw> CFBytes<'raw> {
     pub fn new(
         ptr: &[u8],
-        network_lib_os: &mut NetworkLibOS,
+        libos: &mut LibOS,
         copy_context: &mut CopyContext,
     ) -> Self {
         if copy_context.should_copy(ptr) {
-            let copy_context_ref = copy_context.copy(ptr, network_lib_os).expect("Could not copy buffers during CFBytes creation");
+            let copy_context_ref = copy_context.copy(ptr, libos).expect("Could not copy buffers during CFBytes creation");
             return CFBytes::Copied(copy_context_ref);
         };
 
-        match network_lib_os.recover_metadata(ptr).expect("Could not recover metadata") {
+        match libos.recover_metadata(ptr).expect("Could not recover metadata") {
             Some(m) => CFBytes::RefCounted(m),
-            None => CFBytes::Copied(copy_context.copy(ptr, network_lib_os).expect("Could not copy buffers during CFBytes creation")),
+            None => CFBytes::Copied(copy_context.copy(ptr, libos).expect("Could not copy buffers during CFBytes creation")),
         }
     }
 
@@ -487,6 +569,10 @@ impl<'raw> CFBytes<'raw> {
             CFBytes::Copied(copy_context_ref) => copy_context_ref.as_ref(),
             CFBytes::Raw(raw_ref) => raw_ref,
         }
+    }
+
+    fn default() -> Self {
+        CFBytes::Raw(&[])
     }
 }
 
@@ -557,7 +643,7 @@ impl<'raw> HybridSgaHdr for CFBytes<'raw> {
     #[inline]
     fn inner_serialize<'a>(
         &self,
-        datapath: &mut NetworkLibOS,
+        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
@@ -816,7 +902,7 @@ where
     #[inline]
     fn inner_serialize<'a>(
         &self,
-        datapath: &mut NetworkLibOS,
+        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
@@ -906,61 +992,61 @@ where
     }
 }
 
-pub type MsgID = u32;
-pub type ConnID = usize;
+// pub type MsgID = u32;
+// pub type ConnID = usize;
 
-/// Received Packet data structure
-pub struct ReceivedPkt {
-    pkts: Vec<datapath_metadata_t>,
-    id: MsgID,
-    conn: ConnID,
-}
+// /// Received Packet data structure
+// pub struct ReceivedPkt {
+//     pkts: Vec<datapath_metadata_t>,
+//     id: MsgID,
+//     conn: ConnID,
+// }
 
-impl ReceivedPkt {
-    pub fn new(pkts: Vec<datapath_metadata_t>, id: MsgID, conn_id: ConnID) -> Self {
-        ReceivedPkt {
-            pkts: pkts,
-            id: id,
-            conn: conn_id,
-        }
-    }
+// impl ReceivedPkt {
+//     pub fn new(pkts: Vec<datapath_metadata_t>, id: MsgID, conn_id: ConnID) -> Self {
+//         ReceivedPkt {
+//             pkts: pkts,
+//             id: id,
+//             conn: conn_id,
+//         }
+//     }
 
-    pub fn data_len(&self) -> usize {
-        let sum: usize = self.pkts.iter().map(|pkt| pkt.data_len()).sum();
-        sum
-    }
+//     pub fn data_len(&self) -> usize {
+//         let sum: usize = self.pkts.iter().map(|pkt| pkt.data_len()).sum();
+//         sum
+//     }
 
-    pub fn conn_id(&self) -> ConnID {
-        self.conn
-    }
+//     pub fn conn_id(&self) -> ConnID {
+//         self.conn
+//     }
 
-    pub fn msg_id(&self) -> MsgID {
-        self.id
-    }
+//     pub fn msg_id(&self) -> MsgID {
+//         self.id
+//     }
 
-    pub fn num_segs(&self) -> usize {
-        self.pkts.len()
-    }
+//     pub fn num_segs(&self) -> usize {
+//         self.pkts.len()
+//     }
 
-    pub fn seg(&self, idx: usize) -> &datapath_metadata_t {
-        &self.pkts[idx]
-    }
+//     pub fn seg(&self, idx: usize) -> &datapath_metadata_t {
+//         &self.pkts[idx]
+//     }
 
-    pub fn iter(&self) -> std::slice::Iter<datapath_metadata_t> {
-        self.pkts.iter()
-    }
+//     pub fn iter(&self) -> std::slice::Iter<datapath_metadata_t> {
+//         self.pkts.iter()
+//     }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<datapath_metadata_t> {
-        self.pkts.iter_mut()
-    }
+//     pub fn iter_mut(&mut self) -> std::slice::IterMut<datapath_metadata_t> {
+//         self.pkts.iter_mut()
+//     }
 
-    pub fn flatten(&self) -> Vec<u8> {
-        let bytes: Vec<u8> = self
-            .pkts
-            .iter()
-            .map(|pkt| pkt.as_ref().to_vec())
-            .flatten()
-            .collect();
-        bytes
-    }
-}
+//     pub fn flatten(&self) -> Vec<u8> {
+//         let bytes: Vec<u8> = self
+//             .pkts
+//             .iter()
+//             .map(|pkt| pkt.as_ref().to_vec())
+//             .flatten()
+//             .collect();
+//         bytes
+//     }
+// }

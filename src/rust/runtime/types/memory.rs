@@ -111,7 +111,7 @@ impl datapath_metadata_t {
 
 /// Datapath buffer: Allocated buffer for
 #[repr(C)]
-#[derive(Copy, Clone)]
+// #[derive(Copy)]
 pub struct datapath_buffer_t {
     /// Actual data buffer to write into
     pub buffer: *mut c_void,
