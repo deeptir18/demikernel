@@ -388,7 +388,7 @@ impl NetworkLibOS {
         &mut self,
         sockqd: QDesc, 
         _copy_context: &mut CopyContext,
-        _cornflakes_obj: impl HybridSgaHdr,
+        _cornflakes_obj: &impl HybridSgaHdr,
     ) -> Result<QToken, Fail> {
         unimplemented!();
     }

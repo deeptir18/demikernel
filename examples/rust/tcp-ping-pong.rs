@@ -201,7 +201,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                 let qt: QToken = match libos.push_cornflakes_obj(
                                     qd,
                                     &mut copy_context,
-                                    single_ser,
+                                    &mut single_ser,
                                 ) {
                                     Ok(qt) => qt,
                                     Err(e) => panic!("failed to push CF object: {:?}", e),

@@ -1,0 +1,9 @@
+namespace echo_fb;
+
+table SingleBufferFB {
+    message:[ubyte];
+}
+
+table ListFB {
+    messages:[SingleBufferFB];
+}
