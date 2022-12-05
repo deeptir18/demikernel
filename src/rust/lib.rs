@@ -41,6 +41,9 @@ extern crate log;
 #[cfg(feature = "catnip-libos")]
 mod catnip;
 
+#[cfg(feature = "catcorn-libos")]
+mod catcorn;
+
 #[cfg(feature = "catpowder-libos")]
 mod catpowder;
 
@@ -71,5 +74,5 @@ pub use crate::runtime::{
     QType,
 };
 
-pub mod demikernel;
 pub mod cornflakes;
+pub mod demikernel;

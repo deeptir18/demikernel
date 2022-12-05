@@ -5,22 +5,22 @@
 // Imports
 //======================================================================================================================
 
-use ::anyhow::Result;
-use ::demikernel::{
+use anyhow::Result;
+use demikernel::{
     cornflakes::{
+        generated_objects::{
+            ListCF,
+            SingleBufferCF,
+        },
+        CFBytes,
         CopyContext,
         HybridSgaHdr,
-        CFBytes,
         VariableList,
-        generated_objects::{
-            SingleBufferCF,
-            ListCF,
-        },
     },
     demi_sgarray_t,
     runtime::types::{
-        datapath_metadata_t,
         datapath_buffer_t,
+        datapath_metadata_t,
         demi_opcode_t,
     },
     LibOS,
@@ -29,15 +29,17 @@ use ::demikernel::{
     QToken,
 };
 
-use byteorder::{BigEndian, ByteOrder};
-use ::std::{
+use byteorder::{
+    BigEndian,
+    ByteOrder,
+};
+use std::{
     env,
     net::SocketAddrV4,
     panic,
     slice,
     str::FromStr,
 };
-
 
 #[cfg(target_os = "windows")]
 pub const AF_INET: i32 = windows::Win32::Networking::WinSock::AF_INET.0 as i32;
@@ -52,7 +54,7 @@ pub const AF_INET: i32 = libc::AF_INET;
 pub const SOCK_STREAM: i32 = libc::SOCK_STREAM;
 
 #[cfg(feature = "profiler")]
-use ::demikernel::perftools::profiler;
+use demikernel::perftools::profiler;
 
 pub enum ModeCodeT {
     MODE_CF0 = 0,
@@ -107,7 +109,9 @@ fn read_message_type(packet: &datapath_metadata_t) -> Result<SimpleMessageType> 
     match (BigEndian::read_u16(msg_type), BigEndian::read_u16(size)) {
         (0, 0) => Ok(SimpleMessageType::Single),
         (1, size) => Ok(SimpleMessageType::List(size as _)),
-        (_, _) => {unimplemented!();},
+        (_, _) => {
+            unimplemented!();
+        },
     }
 }
 
@@ -155,7 +159,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
         }
 
         // The qresult has a datapath_metadata_t variable too alongside the sga_buffer optionally
-        // so do we need to pop a vec of received packets, or is it ok to deserialize packet by packet? 
+        // so do we need to pop a vec of received packets, or is it ok to deserialize packet by packet?
         let (i, qr) = libos.wait_any(&qtokens).unwrap();
         qtokens.remove(i);
 
@@ -177,7 +181,9 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                     // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
                     ModeCodeT::MODE_CF0 => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let pkt: datapath_metadata_t  = unsafe { qr.qr_value.qr_metadata };
+                        let pkt_wrapper: std::mem::ManuallyDrop<datapath_metadata_t> =
+                            unsafe { qr.qr_value.qr_metadata };
+                        let pkt = std::mem::ManuallyDrop::<datapath_metadata_t>::into_inner(pkt_wrapper);
                         // Deserialize.
                         let mut copy_context = CopyContext::new(&mut libos)?;
                         let message_type = read_message_type(&pkt)?;
@@ -198,11 +204,8 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                     // tracing::debug!(set_msg =? single_ser.get_message().as_ref());
                                 }
                                 // Push data.
-                                let qt: QToken = match libos.push_cornflakes_obj(
-                                    qd,
-                                    &mut copy_context,
-                                    &mut single_ser,
-                                ) {
+                                let qt: QToken = match libos.push_cornflakes_obj(qd, &mut copy_context, &mut single_ser)
+                                {
                                     Ok(qt) => qt,
                                     Err(e) => panic!("failed to push CF object: {:?}", e),
                                 };
@@ -210,18 +213,18 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                 match libos.release_cornflakes_obj(&mut copy_context, single_ser) {
                                     Ok(_) => {},
                                     Err(e) => panic!("failed to release CF object: {:?}", e),
-                                }; 
+                                };
                             },
                             SimpleMessageType::List(_size) => {
                                 unimplemented!();
-                            }
-                        }                      
+                            },
+                        }
                     },
-                   // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
-                   ModeCodeT::MODE_NONE => {
+                    // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
+                    ModeCodeT::MODE_NONE => {
                         let qd: QDesc = qr.qr_qd.into();
                         let sga: demi_sgarray_t = unsafe { qr.qr_value.sga };
-        
+
                         // Push data.
                         let qt: QToken = match libos.push(qd, &sga) {
                             Ok(qt) => qt,
@@ -240,7 +243,6 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                         unimplemented!();
                     },
                 }
-
             },
             // Push completed.
             demi_opcode_t::DEMI_OPC_PUSH => {
@@ -358,7 +360,10 @@ fn usage(program_name: &String) {
     println!("Modes:\n");
     println!("  --client       Run program in client mode.\n");
     println!("  --server       Run program in server mode.\n");
-    println!("  --packet_type  Type of serialization format the packets should be created in (cf_0c/cf_1c/flatbuffer/<None>).\n");
+    println!(
+        "  --packet_type  Type of serialization format the packets should be created in \
+         (cf_0c/cf_1c/flatbuffer/<None>).\n"
+    );
 }
 
 //======================================================================================================================
@@ -372,7 +377,7 @@ fn convert(mode_name: String) -> ModeCodeT {
         return ModeCodeT::MODE_CF1;
     } else if mode_name.contains("flatbuffer") {
         return ModeCodeT::MODE_FB;
-    } 
+    }
     return ModeCodeT::MODE_NONE;
 }
 
@@ -401,4 +406,3 @@ pub fn main() -> Result<()> {
 
     Ok(())
 }
-

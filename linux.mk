@@ -59,6 +59,12 @@ DRIVER ?= $(shell [ ! -z "`lspci | grep -E "ConnectX-[4,5]"`" ] && echo mlx5 || 
 CARGO_FEATURES += --features=$(DRIVER)
 endif
 
+ifeq ($(LIBOS),catcorn)
+DRIVER ?= $(shell [ ! -z "`lspci | grep -E "ConnectX-[4,5]"`" ] && echo mlx5 || echo mlx4)
+CARGO_FEATURES += --features=$(DRIVER)
+endif
+
+
 # Switch for profiler.
 export PROFILER=no
 ifeq ($(PROFILER),yes)

@@ -16,6 +16,10 @@ use self::{
     },
 };
 use crate::{
+    cornflakes::{
+        CopyContext,
+        HybridSgaHdr,
+    },
     demikernel::config::Config,
     runtime::{
         fail::Fail,
@@ -25,7 +29,7 @@ use crate::{
             datapath_metadata_t,
             demi_qresult_t,
             demi_sgarray_t,
-            MempoolId,
+            MempoolID,
         },
         QDesc,
         QToken,
@@ -35,10 +39,6 @@ use std::{
     env,
     net::SocketAddrV4,
     time::SystemTime,
-};
-use crate::cornflakes::{
-    HybridSgaHdr,
-    CopyContext,
 };
 
 #[cfg(feature = "catcollar-libos")]
@@ -257,7 +257,7 @@ impl LibOS {
     }
 
     /// Adds a memory pool in datapath's underlying allocator.
-    pub fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<MempoolId, Fail> {
+    pub fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<MempoolID, Fail> {
         unimplemented!();
     }
 
@@ -287,13 +287,18 @@ impl LibOS {
     }
 
     /// Turns ref to datapath buffer, offset and length into metadata object.
-    pub fn get_metadata_from_tx_buffer(&self, buf: &datapath_buffer_t, offset: usize, len: usize) -> Result<datapath_metadata_t, Fail> {
+    pub fn get_metadata_from_tx_buffer(
+        &self,
+        buf: &datapath_buffer_t,
+        offset: usize,
+        len: usize,
+    ) -> Result<datapath_metadata_t, Fail> {
         unimplemented!();
     }
 
     pub fn push_cornflakes_obj(
         &mut self,
-        sockqd: QDesc, 
+        sockqd: QDesc,
         _copy_context: &mut CopyContext,
         _cornflakes_obj: &impl HybridSgaHdr,
     ) -> Result<QToken, Fail> {

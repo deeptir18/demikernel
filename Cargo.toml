@@ -52,6 +52,7 @@ color-eyre = "0.5"
 # Demikernel Organization
 liburing = { git = "https://github.com/demikernel/liburing-rs", rev = "780827ee3f805d94f9909bd47cd925ee8476a64b", optional = true}
 dpdk-rs = { git = "https://github.com/deeptir18/dpdk-rs", rev = "8044b245c643de29fc3a1edb33e37f33a904d73d", optional = true}
+mlx5-rs = { git ="https://github.com/deeptir18/mlx5-rs",  rev = "8d65171bf4cd76ca83fc1ca69951e85dc0aabfc7", optional = true }
 
 #=======================================================================================================================
 # Targets
@@ -127,7 +128,9 @@ catnap-libos = [ ]
 catpowder-libos = [ ]
 catcollar-libos = [ "liburing" ]
 catnip-libos = [ "libdpdk" ]
+catcorn-libos = ["libmlx5"]
 libdpdk = [ "dpdk-rs" ]
+libmlx5 = ["mlx5-rs"]
 mlx4 = [ "dpdk-rs/mlx4" ]
 mlx5 = [ "dpdk-rs/mlx5" ]
 profiler = [  ]

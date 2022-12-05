@@ -5,11 +5,11 @@
 // Imports
 //======================================================================================================================
 
-use ::std::{
+use std::{
     fs::File,
     io::Read,
 };
-use ::yaml_rust::{
+use yaml_rust::{
     Yaml,
     YamlLoader,
 };
@@ -42,10 +42,10 @@ impl Config {
     }
 
     /// Reads the local IPv4 address parameter from the underlying configuration file.
-    #[cfg(any(feature = "catnip-libos", feature = "catpowder-libos"))]
+    #[cfg(any(feature = "catnip-libos", feature = "catpowder-libos", feature = "catcorn-libos"))]
     pub fn local_ipv4_addr(&self) -> ::std::net::Ipv4Addr {
         // FIXME: this function should return a result.
-        use ::std::net::Ipv4Addr;
+        use std::net::Ipv4Addr;
 
         // FIXME: Change the follow key from "catnip" to "demikernel".
         let local_ipv4_addr: Ipv4Addr = self.0["catnip"]["my_ipv4_addr"]
