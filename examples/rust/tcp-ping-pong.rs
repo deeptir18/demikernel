@@ -17,8 +17,13 @@ use ::demikernel::{
             ListCF,
         },
     },
-    demi_sgarray_t,
+    flatbuffers::echo_fb_generated::echo_fb::{
+        SingleBufferFB,
+        ListFB,
+        SingleBufferFBArgs,
+    },
     runtime::types::{
+        demi_sgarray_t,
         datapath_metadata_t,
         datapath_buffer_t,
         demi_opcode_t,
@@ -38,6 +43,8 @@ use ::std::{
     str::FromStr,
 };
 
+use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
+use std::marker::PhantomData;
 
 #[cfg(target_os = "windows")]
 pub const AF_INET: i32 = windows::Win32::Networking::WinSock::AF_INET.0 as i32;
@@ -55,8 +62,7 @@ pub const SOCK_STREAM: i32 = libc::SOCK_STREAM;
 use ::demikernel::perftools::profiler;
 
 pub enum ModeCodeT {
-    MODE_CF0 = 0,
-    MODE_CF1,
+    MODE_CF = 0,
     MODE_FB,
     MODE_NONE,
 }
@@ -123,7 +129,6 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
         Ok(libos) => libos,
         Err(e) => panic!("failed to initialize libos: {:?}", e.cause),
     };
-
     // Setup peer.
     let sockqd: QDesc = match libos.socket(AF_INET, SOCK_STREAM, 0) {
         Ok(qd) => qd,
@@ -175,7 +180,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
             demi_opcode_t::DEMI_OPC_POP => {
                 match mode {
                     // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
-                    ModeCodeT::MODE_CF0 => {
+                    ModeCodeT::MODE_CF => {
                         let qd: QDesc = qr.qr_qd.into();
                         let pkt: datapath_metadata_t  = unsafe { qr.qr_value.qr_metadata };
                         // Deserialize.
@@ -217,27 +222,46 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                             }
                         }                      
                     },
-                   // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
-                   ModeCodeT::MODE_NONE => {
+                    // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
+                    ModeCodeT::MODE_NONE => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let sga: demi_sgarray_t = unsafe { qr.qr_value.sga };
+                        let pkt: datapath_metadata_t = unsafe { qr.qr_value.qr_metadata };
         
                         // Push data.
-                        let qt: QToken = match libos.push(qd, &sga) {
+                        let qt: QToken = match libos.push_metadata_t(qd, pkt) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
                         qtokens.push(qt);
-                        match libos.sgafree(sga) {
+                        match libos.drop_metadata(pkt) {
                             Ok(_) => {},
                             Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
                         }
                     },
-                    ModeCodeT::MODE_CF1 => {
-                        unimplemented!();
-                    },
+                    // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
                     ModeCodeT::MODE_FB => {
-                        unimplemented!();
+                        let qd: QDesc = qr.qr_qd.into();
+                        let pkt: datapath_metadata_t = unsafe { qr.qr_value.qr_metadata };
+                        let mut builder: flatbuffers::FlatBufferBuilder = flatbuffers::FlatBufferBuilder::new();
+                        let msg_type = read_message_type(&pkt)?;
+                        match msg_type {
+                            SimpleMessageType::Single => {
+                                let object_deser =
+                                    root::<SingleBufferFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let args = SingleBufferFBArgs {
+                                    message: Some(
+                                        builder
+                                            .create_vector_direct::<u8>(object_deser.message().unwrap()),
+                                    ),
+                                };
+                                let single_buffer_fb =
+                                    SingleBufferFB::create(&mut builder, &args);
+                                builder.finish(single_buffer_fb, None);
+                            },
+                            SimpleMessageType::List(_size) => {
+                                unimplemented!();
+                            },
+                        }
                     },
                 }
 
@@ -366,10 +390,8 @@ fn usage(program_name: &String) {
 //======================================================================================================================
 
 fn convert(mode_name: String) -> ModeCodeT {
-    if mode_name.contains("cf_0c") {
-        return ModeCodeT::MODE_CF0;
-    } else if mode_name.contains("cf_1c") {
-        return ModeCodeT::MODE_CF1;
+    if mode_name.contains("cf_0c") or mode_name.contains("cf_1c") {
+        return ModeCodeT::MODE_CF;
     } else if mode_name.contains("flatbuffer") {
         return ModeCodeT::MODE_FB;
     } 

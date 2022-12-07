@@ -338,7 +338,11 @@ impl NetworkLibOS {
     pub fn push_metadata_vec(&self, sockqd: QDesc, metadata_vec: &Vec<datapath_metadata_t>) -> Result<QToken, Fail> {
         unimplemented!();
     }
-
+    /// Will change depending on the cornflakes API
+    /// Pushes a vector of metadata objects to send with scatter-gather.
+    pub fn push_metadata_t(&self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
+        unimplemented!();
+    }
     /// Recovers metadata from an arbitrary pointer.
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
         unimplemented!();
@@ -370,7 +374,7 @@ impl NetworkLibOS {
     }
 
     /// Decrements ref count on underlying datapath buffer and drops if necessary.
-    pub fn drop_metadata_vec(&mut self, metadata: datapath_metadata_t) -> Result<(), Fail> {
+    pub fn drop_metadata(&mut self, metadata: datapath_metadata_t) -> Result<(), Fail> {
         unimplemented!();
     }
 
