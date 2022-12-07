@@ -8,16 +8,20 @@ mod dpdkbuffer;
 //==============================================================================
 // Imports
 //==============================================================================
-
-use ::core::ops::{
+use core::ops::{
     Deref,
     DerefMut,
 };
-use ::std::fmt::Debug;
+use std::fmt::Debug;
 
 //==============================================================================
 // Exports
 //==============================================================================
+
+use crate::{
+    cornflakes::ObjEnum,
+    runtime::types::datapath_metadata_t,
+};
 
 pub use self::databuffer::DataBuffer;
 #[cfg(feature = "libdpdk")]
@@ -32,6 +36,10 @@ pub enum Buffer {
     Heap(DataBuffer),
     #[cfg(feature = "libdpdk")]
     DPDK(DPDKBuffer),
+    #[cfg(feature = "libmlx5")]
+    CornflakesObj(ObjEnum),
+    #[cfg(feature = "libmlx5")]
+    MetadataObj(datapath_metadata_t),
 }
 
 //==============================================================================
@@ -45,6 +53,14 @@ impl Buffer {
             Buffer::Heap(dbuf) => dbuf.adjust(nbytes),
             #[cfg(feature = "libdpdk")]
             Buffer::DPDK(mbuf) => mbuf.adjust(nbytes),
+            #[cfg(feature = "libmlx5")]
+            Buffer::CornflakesObj(_cornflakes_obj) => {
+                unimplemented!();
+            },
+            #[cfg(feature = "libmlx5")]
+            Buffer::MetadataObj(_metadata) => {
+                unimplemented!();
+            },
         }
     }
 
@@ -54,6 +70,14 @@ impl Buffer {
             Buffer::Heap(dbuf) => dbuf.trim(nbytes),
             #[cfg(feature = "libdpdk")]
             Buffer::DPDK(mbuf) => mbuf.trim(nbytes),
+            #[cfg(feature = "libmlx5")]
+            Buffer::CornflakesObj(_cornflakes_obj) => {
+                unimplemented!();
+            },
+            #[cfg(feature = "libmlx5")]
+            Buffer::MetadataObj(_metadata) => {
+                unimplemented!();
+            },
         }
     }
 }
@@ -71,6 +95,14 @@ impl Deref for Buffer {
             Buffer::Heap(dbuf) => dbuf.deref(),
             #[cfg(feature = "libdpdk")]
             Buffer::DPDK(mbuf) => mbuf.deref(),
+            #[cfg(feature = "libmlx5")]
+            Buffer::CornflakesObj(_cornflakes_obj) => {
+                unimplemented!();
+            },
+            #[cfg(feature = "libmlx5")]
+            Buffer::MetadataObj(_metadata) => {
+                unimplemented!();
+            },
         }
     }
 }
@@ -82,6 +114,14 @@ impl DerefMut for Buffer {
             Buffer::Heap(dbuf) => dbuf.deref_mut(),
             #[cfg(feature = "libdpdk")]
             Buffer::DPDK(mbuf) => mbuf.deref_mut(),
+            #[cfg(feature = "libmlx5")]
+            Buffer::CornflakesObj(_cornflakes_obj) => {
+                unimplemented!();
+            },
+            #[cfg(feature = "libmlx5")]
+            Buffer::MetadataObj(_metadata) => {
+                unimplemented!();
+            },
         }
     }
 }

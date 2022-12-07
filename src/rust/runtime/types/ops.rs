@@ -47,7 +47,7 @@ pub struct demi_accept_result_t {
 pub union demi_qr_value_t {
     pub sga: demi_sgarray_t,
     pub ares: demi_accept_result_t,
-    pub qr_metadata: datapath_metadata_t,
+    pub qr_metadata: std::mem::ManuallyDrop<datapath_metadata_t>,
 }
 
 /// Result

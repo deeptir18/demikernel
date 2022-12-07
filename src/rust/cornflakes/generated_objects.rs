@@ -1,43 +1,33 @@
 use crate::{
-    demikernel::libos::{
-        LibOS,
-        network::NetworkLibOS,
+    cornflakes::{
+        CFBytes,
+        CallbackEntryState,
+        CopyContext,
+        HybridSgaHdr,
+        VariableList,
+        BITMAP_LENGTH_FIELD,
+        OFFSET_FIELD,
+        SIZE_FIELD,
     },
-    runtime::{
-        fail::Fail,
-        types::{
-            datapath_metadata_t,
-            datapath_buffer_t
-        },
-    },
-};
-use crate::cornflakes::{
-    CFBytes,
-    HybridSgaHdr,
-    VariableList,
-    SIZE_FIELD,
-    OFFSET_FIELD,
-    BITMAP_LENGTH_FIELD,
-    CallbackEntryState,
-    CopyContext,
+    demikernel::libos::LibOS,
+    runtime::types::datapath_metadata_t,
 };
 
-use std::{default::Default, marker::PhantomData, marker::Sized, ops::Index, slice::Iter, str};
+use anyhow::Error;
 use bitmaps::Bitmap;
-use byteorder::{ByteOrder, LittleEndian};
-use anyhow::{
-    bail,
-    Error,
+use std::{
+    default::Default,
+    marker::Sized,
 };
 
 pub const SingleBufferCF_NUM_U32_BITMAPS: usize = 1;
 
-pub struct SingleBufferCF<'registered> {
+pub struct SingleBufferCF {
     bitmap: [Bitmap<32>; SingleBufferCF_NUM_U32_BITMAPS],
-    message: CFBytes<'registered>,
+    message: CFBytes,
 }
 
-impl<'registered> Clone for SingleBufferCF<'registered>{
+impl Clone for SingleBufferCF {
     #[inline]
     fn clone(&self) -> Self {
         SingleBufferCF {
@@ -47,8 +37,7 @@ impl<'registered> Clone for SingleBufferCF<'registered>{
     }
 }
 
-impl<'registered> std::fmt::Debug for SingleBufferCF<'registered>{
-    
+impl std::fmt::Debug for SingleBufferCF {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SingleBufferCF")
@@ -57,7 +46,7 @@ impl<'registered> std::fmt::Debug for SingleBufferCF<'registered>{
     }
 }
 
-impl<'registered> SingleBufferCF<'registered> {
+impl SingleBufferCF {
     const MESSAGE_BITMAP_IDX: usize = 0;
     const MESSAGE_BITMAP_OFFSET: usize = 0;
 
@@ -67,23 +56,22 @@ impl<'registered> SingleBufferCF<'registered> {
     }
 
     #[inline]
-    pub fn get_message(&self) -> &CFBytes<'registered> {
+    pub fn get_message(&self) -> &CFBytes {
         &self.message
     }
 
     #[inline]
-    pub fn set_message(&mut self, field: CFBytes<'registered>) {
+    pub fn set_message(&mut self, field: CFBytes) {
         self.bitmap[Self::MESSAGE_BITMAP_OFFSET].set(Self::MESSAGE_BITMAP_IDX, true);
         self.message = field;
     }
 }
 
-impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
-    const NUMBER_OF_FIELDS: usize = 1;
-
+impl HybridSgaHdr for SingleBufferCF {
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
-
+    const NUMBER_OF_FIELDS: usize = 1;
     const NUM_U32_BITMAPS: usize = SingleBufferCF_NUM_U32_BITMAPS;
+
     #[inline]
     fn new_in() -> Self
     where
@@ -176,8 +164,7 @@ impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
         F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
     {
         self.serialize_bitmap(header_buffer, constant_header_offset);
-        let cur_constant_offset =
-            constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
+        let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_offset;
         let mut ret = 0;
@@ -199,7 +186,7 @@ impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
     }
 
     #[inline]
-    fn inner_serialize<'a>(
+    fn inner_serialize(
         &self,
         datapath: &mut LibOS,
         header_buffer: &mut [u8],
@@ -210,8 +197,7 @@ impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
         ds_offset: &mut usize,
     ) -> Result<(), Error> {
         self.serialize_bitmap(header_buffer, constant_header_offset);
-        let cur_constant_offset =
-            constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
+        let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_start;
         let cur_sge_idx = 0;
@@ -223,8 +209,8 @@ impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
                 cur_constant_offset,
                 cur_dynamic_offset,
                 copy_context,
-                &mut zero_copy_entries[cur_sge_idx
-                    ..(cur_sge_idx + self.message.num_zero_copy_scatter_gather_entries())],
+                &mut zero_copy_entries
+                    [cur_sge_idx..(cur_sge_idx + self.message.num_zero_copy_scatter_gather_entries())],
                 ds_offset,
             )?;
         }
@@ -254,37 +240,27 @@ impl<'registered> HybridSgaHdr for SingleBufferCF<'registered> {
 
 pub const ListCF_NUM_U32_BITMAPS: usize = 1;
 
-pub struct ListCF<'registered> {
+pub struct ListCF {
     bitmap: [Bitmap<32>; ListCF_NUM_U32_BITMAPS],
-    messages: VariableList<CFBytes<'registered>>,
+    messages: VariableList<CFBytes>,
 }
 
-// impl<'registered> Clone for ListCF<'registered>
-// where
-//     D: Datapath,
-// {
-//     #[inline]
-//     fn clone(&self) -> Self {
-//         ListCF {
-//             bitmap: self.bitmap.clone(),
-//             messages: self.messages.clone(),
-//         }
-//     }
-// }
+impl Clone for ListCF {
+    fn clone(&self) -> Self {
+        ListCF {
+            bitmap: self.bitmap.clone(),
+            messages: self.messages.clone(),
+        }
+    }
+}
 
-// impl<'arena, 'registered, D> std::fmt::Debug for ListCF<'arena, 'registered, D>
-// where
-//     D: Datapath,
-// {
-//     #[inline]
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("ListCF")
-//             .field("messages", &self.messages)
-//             .finish()
-//     }
-// }
+impl std::fmt::Debug for ListCF {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListCF").field("messages", &self.messages).finish()
+    }
+}
 
-// impl<'arena, 'registered, D> ListCF<'arena, 'registered, D>
+// impl<'arena, , D> ListCF<'arena, , D>
 // where
 //     D: Datapath,
 // {
@@ -297,18 +273,18 @@ pub struct ListCF<'registered> {
 //     }
 
 //     #[inline]
-//     pub fn get_messages(&self) -> &VariableList<'arena, CFBytes<'registered, D>, D> {
+//     pub fn get_messages(&self) -> &VariableList<'arena, CFBytes<, D>, D> {
 //         &self.messages
 //     }
 
 //     #[inline]
-//     pub fn set_messages(&mut self, field: VariableList<'arena, CFBytes<'registered, D>, D>) {
+//     pub fn set_messages(&mut self, field: VariableList<'arena, CFBytes<, D>, D>) {
 //         self.bitmap[Self::MESSAGES_BITMAP_OFFSET].set(Self::MESSAGES_BITMAP_IDX, true);
 //         self.messages = field;
 //     }
 
 //     #[inline]
-//     pub fn get_mut_messages(&mut self) -> &mut VariableList<'arena, CFBytes<'registered, D>, D> {
+//     pub fn get_mut_messages(&mut self) -> &mut VariableList<'arena, CFBytes<, D>, D> {
 //         &mut self.messages
 //     }
 //     #[inline]
@@ -318,7 +294,7 @@ pub struct ListCF<'registered> {
 //     }
 // }
 
-// impl<'arena, 'registered, D> HybridArenaRcSgaHdr<'arena, D> for ListCF<'arena, 'registered, D>
+// impl<'arena, , D> HybridArenaRcSgaHdr<'arena, D> for ListCF<'arena, , D>
 // where
 //     D: Datapath,
 // {

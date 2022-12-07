@@ -26,6 +26,9 @@ pub use liburing;
 #[cfg(feature = "libdpdk")]
 pub use dpdk_rs as libdpdk;
 
+#[cfg(feature = "libmlx5")]
+pub use mlx5_rs as libmlx5;
+
 //==============================================================================
 // Traits
 //==============================================================================

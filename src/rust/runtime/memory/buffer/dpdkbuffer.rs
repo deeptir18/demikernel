@@ -6,7 +6,7 @@
 //==============================================================================
 
 use crate::runtime::fail::Fail;
-use ::dpdk_rs::{
+use dpdk_rs::{
     rte_mbuf,
     rte_mempool,
     rte_pktmbuf_adj,
@@ -14,7 +14,7 @@ use ::dpdk_rs::{
     rte_pktmbuf_free,
     rte_pktmbuf_trim,
 };
-use ::std::{
+use std::{
     mem,
     ops::{
         Deref,
