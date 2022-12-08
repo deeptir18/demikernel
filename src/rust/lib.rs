@@ -76,5 +76,4 @@ pub use crate::runtime::{
 
 pub mod cornflakes;
 pub mod demikernel;
-pub mod cornflakes;
 pub mod flatbuffers;

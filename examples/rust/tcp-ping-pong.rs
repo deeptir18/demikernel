@@ -26,7 +26,6 @@ use demikernel::{
         demi_sgarray_t,
         datapath_metadata_t,
         datapath_buffer_t,
-        datapath_metadata_t,
         demi_opcode_t,
     },
     LibOS,
@@ -45,6 +44,7 @@ use std::{
     panic,
     slice,
     str::FromStr,
+    mem::ManuallyDrop,
 };
 
 use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
@@ -208,7 +208,6 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                         &mut libos,
                                         &mut copy_context,
                                     ));
-                                    // tracing::debug!(set_msg =? single_ser.get_message().as_ref());
                                 }
                                 // Push data.
                                 let qt: QToken = match libos.push_cornflakes_obj(qd, &mut copy_context, &mut single_ser)
@@ -217,20 +216,35 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                     Err(e) => panic!("failed to push CF object: {:?}", e),
                                 };
                                 qtokens.push(qt);
-                                match libos.release_cornflakes_obj(&mut copy_context, single_ser) {
-                                    Ok(_) => {},
-                                    Err(e) => panic!("failed to release CF object: {:?}", e),
-                                };
                             },
                             SimpleMessageType::List(_size) => {
-                                unimplemented!();
+                                let mut list_deser = ListCF::new_in();
+                                let mut list_ser = ListCF::new_in();
+                                list_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
+            
+                                list_ser.init_messages(list_deser.get_messages().len());
+                                let messages = list_ser.get_mut_messages();
+                                for elt in list_deser.get_messages().iter() {
+                                    messages.append(CFBytes::new(
+                                        elt.as_ref(),
+                                        &mut libos,
+                                        &mut copy_context,
+                                    ));
+                                }
+                                // Push data.
+                                let qt: QToken = match libos.push_cornflakes_obj(qd, &mut copy_context, &mut list_ser)
+                                {
+                                    Ok(qt) => qt,
+                                    Err(e) => panic!("failed to push CF object: {:?}", e),
+                                };
+                                qtokens.push(qt);            
                             },
                         }
                     },
                     // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
                     ModeCodeT::MODE_NONE => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let pkt: datapath_metadata_t = unsafe { qr.qr_value.qr_metadata };
+                        let pkt: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
         
                         // Push data.
                         let qt: QToken = match libos.push_metadata_t(qd, pkt) {
@@ -238,15 +252,15 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
                         qtokens.push(qt);
-                        match libos.drop_metadata(pkt) {
-                            Ok(_) => {},
-                            Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
-                        }
+                        // match libos.drop_metadata(pkt) {
+                        //     Ok(_) => {},
+                        //     Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
+                        // }
                     },
                     // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
                     ModeCodeT::MODE_FB => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let pkt: datapath_metadata_t = unsafe { qr.qr_value.qr_metadata };
+                        let pkt: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
                         let mut builder: flatbuffers::FlatBufferBuilder = flatbuffers::FlatBufferBuilder::new();
                         let msg_type = read_message_type(&pkt)?;
                         match msg_type {
@@ -262,11 +276,20 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                 let single_buffer_fb =
                                     SingleBufferFB::create(&mut builder, &args);
                                 builder.finish(single_buffer_fb, None);
+
                             },
                             SimpleMessageType::List(_size) => {
                                 unimplemented!();
                             },
                         }
+
+                        // TODO: pkt.buffer should be sent to  &self.builder.finished_data() 
+                        // Have to see the finalized APIs to do this
+                        let qt: QToken = match libos.push(qd, pkt) {
+                            Ok(qt) => qt,
+                            Err(e) => panic!("push failed: {:?}", e.cause),
+                        };
+                        qtokens.push(qt);
                     },
                 }
             },
@@ -397,7 +420,7 @@ fn usage(program_name: &String) {
 //======================================================================================================================
 
 fn convert(mode_name: String) -> ModeCodeT {
-    if mode_name.contains("cf_0c") or mode_name.contains("cf_1c") {
+    if mode_name.contains("cf_0c") || mode_name.contains("cf_1c") {
         return ModeCodeT::MODE_CF;
     } else if mode_name.contains("flatbuffer") {
         return ModeCodeT::MODE_FB;
@@ -414,7 +437,7 @@ pub fn main() -> Result<()> {
             mode = convert(args[4].to_string());
         }
     }
-    // println!("Mode {}", mode);
+    
     if args.len() >= 3 {
         let sockaddr: SocketAddrV4 = SocketAddrV4::from_str(&args[2])?;
         if args[1] == "--server" {
