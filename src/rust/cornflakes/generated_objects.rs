@@ -1,7 +1,6 @@
 use crate::{
     cornflakes::{
         CFBytes,
-        CallbackEntryState,
         CopyContext,
         HybridSgaHdr,
         VariableList,
@@ -10,10 +9,12 @@ use crate::{
         SIZE_FIELD,
     },
     demikernel::libos::LibOS,
-    runtime::types::datapath_metadata_t,
+    runtime::{
+        fail::Fail,
+        types::datapath_metadata_t,
+    },
 };
 
-use anyhow::Error;
 use bitmaps::Bitmap;
 use std::{
     default::Default,
@@ -88,7 +89,7 @@ impl HybridSgaHdr for SingleBufferCF {
         BITMAP_LENGTH_FIELD
             + Self::bitmap_length()
             + self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) as usize
-                * self.message.total_header_size(true, false)
+                * self.message.total_header_size(true)
     }
 
     #[inline]
@@ -149,7 +150,16 @@ impl HybridSgaHdr for SingleBufferCF {
     // }
 
     #[inline]
-    fn iterate_over_entries<F>(
+    fn zero_copy_data_len(&self) -> usize {
+        let mut ret = 0;
+        if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
+            ret += self.message.zero_copy_data_len();
+        }
+        ret
+    }
+
+    #[inline]
+    fn iterate_over_entries<F, C>(
         &self,
         copy_context: &mut CopyContext,
         header_len: usize,
@@ -158,10 +168,10 @@ impl HybridSgaHdr for SingleBufferCF {
         dynamic_header_offset: usize,
         cur_entry_ptr: &mut usize,
         datapath_callback: &mut F,
-        callback_state: &mut CallbackEntryState,
-    ) -> Result<usize, Error>
+        callback_state: &mut C,
+    ) -> Result<usize, Fail>
     where
-        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
     {
         self.serialize_bitmap(header_buffer, constant_header_offset);
         let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
@@ -188,14 +198,13 @@ impl HybridSgaHdr for SingleBufferCF {
     #[inline]
     fn inner_serialize(
         &self,
-        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
         copy_context: &mut CopyContext,
         zero_copy_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         self.serialize_bitmap(header_buffer, constant_header_offset);
         let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
@@ -204,7 +213,6 @@ impl HybridSgaHdr for SingleBufferCF {
 
         if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
             self.message.inner_serialize(
-                datapath,
                 header_buffer,
                 cur_constant_offset,
                 cur_dynamic_offset,
@@ -224,8 +232,7 @@ impl HybridSgaHdr for SingleBufferCF {
         buf: &datapath_metadata_t,
         header_offset: usize,
         buffer_offset: usize,
-        // arena: &'arena bumpalo::Bump,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         let bitmap_size = self.deserialize_bitmap(buf, header_offset, buffer_offset);
         let cur_constant_offset = header_offset + BITMAP_LENGTH_FIELD + bitmap_size;
 
@@ -260,7 +267,7 @@ impl std::fmt::Debug for ListCF {
     }
 }
 
-impl ListCF{
+impl ListCF {
     const MESSAGES_BITMAP_IDX: usize = 0;
     const MESSAGES_BITMAP_OFFSET: usize = 0;
 
@@ -284,6 +291,7 @@ impl ListCF{
     pub fn get_mut_messages(&mut self) -> &mut VariableList<CFBytes> {
         &mut self.messages
     }
+
     #[inline]
     pub fn init_messages(&mut self, num: usize) {
         self.messages = VariableList::init(num);
@@ -292,11 +300,10 @@ impl ListCF{
 }
 
 impl HybridSgaHdr for ListCF {
-    const NUMBER_OF_FIELDS: usize = 1;
-
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
-
+    const NUMBER_OF_FIELDS: usize = 1;
     const NUM_U32_BITMAPS: usize = ListCF_NUM_U32_BITMAPS;
+
     #[inline]
     fn new_in() -> Self
     where
@@ -312,17 +319,15 @@ impl HybridSgaHdr for ListCF {
     fn dynamic_header_size(&self) -> usize {
         BITMAP_LENGTH_FIELD
             + Self::bitmap_length()
-            + self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-                as usize
-                * self.messages.total_header_size(true, false)
+            + self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) as usize
+                * self.messages.total_header_size(true)
     }
 
     #[inline]
     fn dynamic_header_start(&self) -> usize {
         BITMAP_LENGTH_FIELD
             + Self::bitmap_length()
-            + self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-                as usize
+            + self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) as usize
                 * VariableList::<CFBytes>::CONSTANT_HEADER_SIZE
     }
 
@@ -358,28 +363,17 @@ impl HybridSgaHdr for ListCF {
         }
     }
 
-    // #[inline]
-    // fn check_deep_equality(&self, other: &Self) -> bool {
-    //     if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-    //         != other.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-    //     {
-    //         return false;
-    //     } else if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-    //         && other.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET)
-    //     {
-    //         if !self
-    //             .get_messages()
-    //             .check_deep_equality(&other.get_messages())
-    //         {
-    //             return false;
-    //         }
-    //     }
-
-    //     return true;
-    // }
+    #[inline]
+    fn zero_copy_data_len(&self) -> usize {
+        let mut ret = 0;
+        if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
+            ret += self.messages.zero_copy_data_len();
+        }
+        ret
+    }
 
     #[inline]
-    fn iterate_over_entries<F>(
+    fn iterate_over_entries<F, C>(
         &self,
         copy_context: &mut CopyContext,
         header_len: usize,
@@ -388,14 +382,13 @@ impl HybridSgaHdr for ListCF {
         dynamic_header_offset: usize,
         cur_entry_ptr: &mut usize,
         datapath_callback: &mut F,
-        callback_state: &mut CallbackEntryState,
-    ) -> Result<usize, Error>
+        callback_state: &mut C,
+    ) -> Result<usize, Fail>
     where
-        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
     {
         self.serialize_bitmap(header_buffer, constant_header_offset);
-        let cur_constant_offset =
-            constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
+        let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_offset;
         let mut ret = 0;
@@ -419,30 +412,27 @@ impl HybridSgaHdr for ListCF {
     #[inline]
     fn inner_serialize(
         &self,
-        datapath: &mut LibOS,
-        header_buffer: &mut [u8],
+        header: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
         copy_context: &mut CopyContext,
-        zero_copy_entries: &mut [datapath_metadata_t],
+        zero_copy_scatter_gather_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
-    ) -> Result<(), Error> {
-        self.serialize_bitmap(header_buffer, constant_header_offset);
-        let cur_constant_offset =
-            constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
+    ) -> Result<(), Fail> {
+        self.serialize_bitmap(header, constant_header_offset);
+        let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_start;
         let cur_sge_idx = 0;
 
         if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
             self.messages.inner_serialize(
-                datapath,
-                header_buffer,
+                header,
                 cur_constant_offset,
                 cur_dynamic_offset,
                 copy_context,
-                &mut zero_copy_entries[cur_sge_idx
-                    ..(cur_sge_idx + self.messages.num_zero_copy_scatter_gather_entries())],
+                &mut zero_copy_scatter_gather_entries
+                    [cur_sge_idx..(cur_sge_idx + self.messages.num_zero_copy_scatter_gather_entries())],
                 ds_offset,
             )?;
         }
@@ -450,15 +440,13 @@ impl HybridSgaHdr for ListCF {
         Ok(())
     }
 
-
     #[inline]
     fn inner_deserialize(
         &mut self,
         buffer: &datapath_metadata_t,
         header_offset: usize,
         buffer_offset: usize,
-        // arena: &'arena bumpalo::Bump,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         let bitmap_size = self.deserialize_bitmap(buffer, header_offset, buffer_offset);
         let cur_constant_offset = header_offset + BITMAP_LENGTH_FIELD + bitmap_size;
 

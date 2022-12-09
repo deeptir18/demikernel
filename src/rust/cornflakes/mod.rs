@@ -4,14 +4,13 @@ pub mod generated_objects;
 
 use crate::{
     demikernel::libos::LibOS,
-    runtime::types::{
-        datapath_buffer_t,
-        datapath_metadata_t,
+    runtime::{
+        fail::Fail,
+        types::{
+            datapath_buffer_t,
+            datapath_metadata_t,
+        },
     },
-};
-use anyhow::{
-    bail,
-    Error,
 };
 use bitmaps::Bitmap;
 use byteorder::{
@@ -34,6 +33,22 @@ use std::{
 pub enum ObjEnum {
     Single(SingleBufferCF),
     List(ListCF),
+}
+
+impl ObjEnum {
+    pub fn total_header_size(&self) -> usize {
+        match self {
+            ObjEnum::Single(single) => single.total_header_size(false),
+            ObjEnum::List(list) => list.total_header_size(false),
+        }
+    }
+
+    pub fn total_length(&self, copy_context: &CopyContext) -> usize {
+        match self {
+            ObjEnum::Single(single) => single.total_length(copy_context),
+            ObjEnum::List(list) => list.total_length(copy_context),
+        }
+    }
 }
 
 impl Clone for ObjEnum {
@@ -60,7 +75,7 @@ pub const OFFSET_FIELD: usize = 4;
 pub const BITMAP_LENGTH_FIELD: usize = 4;
 
 #[inline]
-pub fn read_size_and_offset(offset: usize, buffer: &datapath_metadata_t) -> Result<(usize, usize), Error> {
+pub fn read_size_and_offset(offset: usize, buffer: &datapath_metadata_t) -> Result<(usize, usize), Fail> {
     let forward_pointer = ForwardPointer(buffer.as_ref(), offset);
     Ok((
         forward_pointer.get_size() as usize,
@@ -102,7 +117,7 @@ pub struct SerializationCopyBuf {
 }
 
 impl SerializationCopyBuf {
-    pub fn new(libos: &mut LibOS) -> Result<Self, Error> {
+    pub fn new(libos: &mut LibOS) -> Result<Self, Fail> {
         let (buf_option, max_len) = libos.allocate_tx_buffer().expect("Could not allocate tx buffer");
 
         match buf_option {
@@ -113,9 +128,18 @@ impl SerializationCopyBuf {
                 });
             },
             None => {
-                bail!("Could not allocate tx buffer for serialization copying.")
+                return Err(Fail::new(
+                    libc::ENOMEM,
+                    "Could not allocate tx buffer for serialization copying",
+                ));
             },
         };
+    }
+
+    #[inline]
+    pub fn to_metadata(&self) -> datapath_metadata_t {
+        let len = self.len();
+        self.buf.to_metadata(0, len)
     }
 
     #[inline]
@@ -155,7 +179,7 @@ pub struct CopyContext {
 
 impl CopyContext {
     #[inline]
-    pub fn new(libos: &mut LibOS) -> Result<Self, Error> {
+    pub fn new(libos: &mut LibOS) -> Result<Self, Fail> {
         #[cfg(feature = "profiler")]
         demikernel::timer!("Allocate new copy context");
         Ok(CopyContext {
@@ -164,6 +188,12 @@ impl CopyContext {
             current_length: 0,
             remaining: 0,
         })
+    }
+
+    #[inline]
+    pub fn to_metadata_vec(self) -> Vec<datapath_metadata_t> {
+        let vec: Vec<datapath_metadata_t> = self.copy_buffers.iter().map(|buf| buf.to_metadata()).collect();
+        vec
     }
 
     #[inline]
@@ -182,7 +212,7 @@ impl CopyContext {
     }
 
     #[inline]
-    pub fn push(&mut self, libos: &mut LibOS) -> Result<(), Error> {
+    pub fn push(&mut self, libos: &mut LibOS) -> Result<(), Fail> {
         let buf = SerializationCopyBuf::new(libos)?;
         self.remaining = buf.remaining();
         self.copy_buffers.push(buf);
@@ -192,7 +222,7 @@ impl CopyContext {
     /// Copies data into copy context.
     /// Returns (start, end) range of copy context that buffer was copied into.
     #[inline]
-    pub fn copy(&mut self, buf: &[u8], libos: &mut LibOS) -> Result<CopyContextRef, Error> {
+    pub fn copy(&mut self, buf: &[u8], libos: &mut LibOS) -> Result<CopyContextRef, Fail> {
         let current_length = self.current_length;
         // TODO: doesn't work if buffer is > than an MTU
         if self.remaining < buf.len() {
@@ -203,10 +233,13 @@ impl CopyContext {
         let current_offset = last_buf.len();
         let written = last_buf.write(buf)?;
         if written != buf.len() {
-            bail!(
-                "Failed to write entire buf len into copy buffer, only wrote: {:?}",
-                written
-            );
+            return Err(Fail::new(
+                libc::EINVAL,
+                &format!(
+                    "Failed to write entire buf len into copy buffer, only wrote: {:?}",
+                    written,
+                ),
+            ));
         }
         self.current_length += written;
         self.remaining -= written;
@@ -280,8 +313,6 @@ impl CopyContextRef {
         self.len
     }
 }
-
-type CallbackEntryState = ();
 
 pub trait HybridSgaHdr {
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
@@ -380,11 +411,17 @@ pub trait HybridSgaHdr {
         0
     }
     /// Total header size.
-    fn total_header_size(&self, with_ref: bool, _with_bitmap: bool) -> usize {
+    fn total_header_size(&self, with_ref: bool) -> usize {
         Self::CONSTANT_HEADER_SIZE * (with_ref as usize) + self.dynamic_header_size()
     }
 
-    fn iterate_over_entries<F>(
+    fn total_length(&self, copy_context: &CopyContext) -> usize {
+        self.total_header_size(false) + copy_context.data_len() + self.zero_copy_data_len()
+    }
+
+    fn zero_copy_data_len(&self) -> usize;
+
+    fn iterate_over_entries<F, C>(
         &self,
         _copy_context: &mut CopyContext,
         _header_len: usize,
@@ -393,35 +430,33 @@ pub trait HybridSgaHdr {
         _dynamic_header_offset: usize,
         _cur_entry_ptr: &mut usize,
         _datapath_callback: &mut F,
-        _callback_state: &mut CallbackEntryState,
-    ) -> Result<usize, Error>
+        _callback_state: &mut C,
+    ) -> Result<usize, Fail>
     where
-        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
     {
         unimplemented!();
     }
 
-    fn inner_serialize<'a>(
+    fn inner_serialize(
         &self,
-        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_offset: usize,
         copy_context: &mut CopyContext,
         zero_copy_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Fail>;
 
     #[inline]
     fn serialize_into_arena_datapath_sga<'a>(
         &self,
-        datapath: &mut LibOS,
         mut copy_context: CopyContext,
         // arena: &'a bumpalo::Bump,
-    ) -> Result<ArenaDatapathSga, Error> {
+    ) -> Result<DatapathSga, Fail> {
         debug!("Serializing into sga");
         let mut owned_hdr = {
-            let size = self.total_header_size(false, true);
+            let size = self.total_header_size(false);
             Vec::with_capacity(size)
             // bumpalo::collections::Vec::with_capacity_zeroed_in(size, arena)
         };
@@ -435,7 +470,6 @@ pub trait HybridSgaHdr {
 
         // inner serialize
         self.inner_serialize(
-            datapath,
             &mut header_buffer,
             0,
             self.dynamic_header_start(),
@@ -444,7 +478,7 @@ pub trait HybridSgaHdr {
             &mut ds_offset,
         )?;
 
-        Ok(ArenaDatapathSga::new(copy_context, zero_copy_entries, owned_hdr))
+        Ok(DatapathSga::new(copy_context, zero_copy_entries, owned_hdr))
     }
 
     fn inner_deserialize(
@@ -452,8 +486,7 @@ pub trait HybridSgaHdr {
         buf: &datapath_metadata_t,
         header_offset: usize,
         buffer_offset: usize,
-        // arena: &'arena bumpalo::Bump,
-    ) -> Result<(), Error>;
+    ) -> Result<(), Fail>;
 
     #[inline]
     fn deserialize(
@@ -461,7 +494,7 @@ pub trait HybridSgaHdr {
         pkt: &datapath_metadata_t,
         offset: usize,
         // arena: &'arena bumpalo::Bump,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         // Right now, for deserialize we assume one contiguous buffer
         // let metadata = pkt.seg(0);
         self.inner_deserialize(pkt, 0, offset)?;
@@ -470,7 +503,7 @@ pub trait HybridSgaHdr {
 }
 
 // #[derive(PartialEq, Eq)]
-pub struct ArenaDatapathSga {
+pub struct DatapathSga {
     // buffers user has copied into
     copy_context: CopyContext,
     // zero copy entries
@@ -479,12 +512,12 @@ pub struct ArenaDatapathSga {
     header: Vec<u8>,
 }
 
-impl ArenaDatapathSga {
+impl DatapathSga {
     pub fn new(copy_context: CopyContext, zero_copy_entries: Vec<datapath_metadata_t>, header: Vec<u8>) -> Self {
-        ArenaDatapathSga {
-            copy_context: copy_context,
-            zero_copy_entries: zero_copy_entries,
-            header: header,
+        DatapathSga {
+            copy_context,
+            zero_copy_entries,
+            header,
         }
     }
 }
@@ -575,7 +608,15 @@ impl HybridSgaHdr for CFBytes {
     }
 
     #[inline]
-    fn iterate_over_entries<F>(
+    fn zero_copy_data_len(&self) -> usize {
+        match self {
+            CFBytes::RefCounted(metadata) => metadata.data_len(),
+            CFBytes::Copied(_) => 0,
+        }
+    }
+
+    #[inline]
+    fn iterate_over_entries<F, C>(
         &self,
         _copy_context: &mut CopyContext,
         header_len: usize,
@@ -584,10 +625,10 @@ impl HybridSgaHdr for CFBytes {
         _dynamic_header_offset: usize,
         cur_entry_ptr: &mut usize,
         datapath_callback: &mut F,
-        callback_state: &mut CallbackEntryState,
-    ) -> Result<usize, Error>
+        callback_state: &mut C,
+    ) -> Result<usize, Fail>
     where
-        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
     {
         match self {
             CFBytes::RefCounted(metadata) => {
@@ -623,14 +664,13 @@ impl HybridSgaHdr for CFBytes {
     #[inline]
     fn inner_serialize(
         &self,
-        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
         copy_context: &mut CopyContext,
         zero_copy_scatter_gather_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         match self {
             CFBytes::RefCounted(metadata) => {
                 zero_copy_scatter_gather_entries[0] = metadata.clone();
@@ -648,12 +688,6 @@ impl HybridSgaHdr for CFBytes {
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(copy_context_ref.len() as u32);
                 obj_ref.write_offset(offset_to_write as u32);
-                // tracing::debug!(
-                //     constant_header_offset,
-                //     offset_to_write,
-                //     len = copy_context_ref.len(),
-                //     "Filling in dpseg for copy context cf bytes"
-                // );
             },
         }
         Ok(())
@@ -665,7 +699,7 @@ impl HybridSgaHdr for CFBytes {
         buf: &datapath_metadata_t,
         header_offset: usize,
         buffer_offset: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
         let original_offset = buf.offset();
@@ -830,7 +864,16 @@ where
     }
 
     #[inline]
-    fn iterate_over_entries<F>(
+    fn zero_copy_data_len(&self) -> usize {
+        self.elts
+            .iter()
+            .take(self.num_set)
+            .map(|x| x.zero_copy_data_len())
+            .sum()
+    }
+
+    #[inline]
+    fn iterate_over_entries<F, C>(
         &self,
         copy_context: &mut CopyContext,
         header_len: usize,
@@ -839,10 +882,10 @@ where
         dynamic_header_offset: usize,
         cur_entry_ptr: &mut usize,
         datapath_callback: &mut F,
-        callback_state: &mut CallbackEntryState,
-    ) -> Result<usize, Error>
+        callback_state: &mut C,
+    ) -> Result<usize, Fail>
     where
-        F: FnMut(&datapath_metadata_t, &mut CallbackEntryState) -> Result<(), Error>,
+        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
     {
         {
             let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
@@ -901,14 +944,13 @@ where
     #[inline]
     fn inner_serialize(
         &self,
-        datapath: &mut LibOS,
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         dynamic_header_start: usize,
         copy_context: &mut CopyContext,
         zero_copy_scatter_gather_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         {
             let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
             forward_pointer.write_size(self.num_set as u32);
@@ -926,7 +968,6 @@ where
                 forward_offset.write_size(elt.dynamic_header_size() as u32);
                 forward_offset.write_offset(cur_dynamic_off as u32);
                 elt.inner_serialize(
-                    datapath,
                     header_buffer,
                     cur_dynamic_off,
                     cur_dynamic_off + elt.dynamic_header_start(),
@@ -936,7 +977,6 @@ where
                 )?;
             } else {
                 elt.inner_serialize(
-                    datapath,
                     header_buffer,
                     dynamic_header_start + T::CONSTANT_HEADER_SIZE * i,
                     cur_dynamic_off,
@@ -958,7 +998,7 @@ where
         constant_offset: usize,
         buffer_offset: usize,
         // arena: &'arena bumpalo::Bump,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Fail> {
         let forward_pointer = ForwardPointer(buffer.as_ref(), constant_offset + buffer_offset);
         let size = forward_pointer.get_size() as usize;
         let dynamic_offset = forward_pointer.get_offset() as usize;

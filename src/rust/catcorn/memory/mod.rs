@@ -17,15 +17,19 @@ use crate::runtime::{
         custom_mlx5_deregister_and_free_registered_mempool,
         custom_mlx5_get_registered_mempool_size,
         custom_mlx5_mempool,
+        custom_mlx5_mempool_alloc,
+        custom_mlx5_mempool_find_index,
+        custom_mlx5_mempool_free,
+        custom_mlx5_refcnt_set,
         custom_mlx5_refcnt_update_or_free,
         get_data_mempool,
         ibv_access_flags_IBV_ACCESS_LOCAL_WRITE,
         registered_mempool,
     },
     types::{
+        datapath_buffer_t,
         datapath_metadata_t,
         datapath_recovery_info_t,
-        ofed_recovery_info_t,
         MempoolID,
     },
 };
@@ -162,6 +166,34 @@ impl Mempool {
         (0..num_pages)
             .map(|i| mempool_start + pgsize * i)
             .collect::<Vec<usize>>()
+    }
+
+    #[inline]
+    pub fn alloc_buf(&self) -> Result<Option<datapath_buffer_t>, Fail> {
+        let data = unsafe { custom_mlx5_mempool_alloc(self.data_mempool()) };
+        if data.is_null() {
+            warn!("Allocated none from memory pool at {:?}", self.mempool());
+            return Ok(None);
+        }
+        // recover the reference count index
+        let index = unsafe { custom_mlx5_mempool_find_index(self.data_mempool(), data) };
+        if (index < 0) {
+            unsafe {
+                custom_mlx5_mempool_free(self.data_mempool(), data);
+            }
+            warn!("Couldn't find index; was {}", index);
+            return Ok(None);
+        }
+        // set datapath buffer reference count as 1
+        unsafe {
+            custom_mlx5_refcnt_set(self.mempool(), index as _, 1u8);
+        }
+        Ok(Some(datapath_buffer_t {
+            buffer: data,
+            data_len: 0,
+            max_len: unsafe { access!(self.data_mempool(), item_len, usize) },
+            recovery_info: datapath_recovery_info_t::new_ofed(index as _, self.mempool() as _),
+        }))
     }
 
     #[inline]
