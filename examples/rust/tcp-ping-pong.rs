@@ -18,8 +18,9 @@ use demikernel::{
         VariableList,
     },
     flatbuffers::echo_fb_generated::echo_fb::{
-        SingleBufferFB,
         ListFB,
+        ListFBArgs,
+        SingleBufferFB,
         SingleBufferFBArgs,
     },
     runtime::types::{
@@ -217,7 +218,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                 };
                                 qtokens.push(qt);
                             },
-                            SimpleMessageType::List(_size) => {
+                            SimpleMessageType::List(size) => {
                                 let mut list_deser = ListCF::new_in();
                                 let mut list_ser = ListCF::new_in();
                                 list_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
@@ -244,7 +245,8 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                     // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
                     ModeCodeT::MODE_NONE => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let pkt: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
+                        let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
+                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);;
         
                         // Push data.
                         let qt: QToken = match libos.push_metadata_t(qd, pkt) {
@@ -260,7 +262,8 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                     // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
                     ModeCodeT::MODE_FB => {
                         let qd: QDesc = qr.qr_qd.into();
-                        let pkt: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
+                        let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
+                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);
                         let mut builder: flatbuffers::FlatBufferBuilder = flatbuffers::FlatBufferBuilder::new();
                         let msg_type = read_message_type(&pkt)?;
                         match msg_type {
@@ -278,14 +281,32 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                 builder.finish(single_buffer_fb, None);
 
                             },
-                            SimpleMessageType::List(_size) => {
-                                unimplemented!();
+                            SimpleMessageType::List(size) => {
+                                let object_deser =
+                                    root::<ListFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let args_vec: Vec<SingleBufferFBArgs> = (0..size)
+                                    .map(|idx| SingleBufferFBArgs {
+                                        message: Some(builder.create_vector_direct::<u8>(
+                                            object_deser.messages().unwrap().get(idx).message().unwrap(),
+                                        )),
+                                    })
+                                    .collect();
+                                let vec: Vec<WIPOffset<SingleBufferFB>> = args_vec
+                                    .iter()
+                                    .map(|args| SingleBufferFB::create(&mut builder, args))
+                                    .collect();
+                                let list_args = ListFBArgs {
+                                    messages: Some(builder.create_vector(vec.as_slice())),
+                                };
+                                let list_fb = ListFB::create(&mut builder, &list_args);
+                                builder.finish(list_fb, None);
                             },
                         }
 
-                        // TODO: pkt.buffer should be sent to  &self.builder.finished_data() 
+                        // TODO: pkt.buffer should be set to  &self.builder.finished_data()
+                        // in order to get flatbuffer message in. 
                         // Have to see the finalized APIs to do this
-                        let qt: QToken = match libos.push(qd, pkt) {
+                        let qt: QToken = match libos.push_metadata_t(qd, pkt) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
