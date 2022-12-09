@@ -6,7 +6,7 @@
 //======================================================================================================================
 
 use crate::runtime::fail::Fail;
-use ::std::env;
+use std::env;
 
 //======================================================================================================================
 // Structures
@@ -18,6 +18,7 @@ pub enum LibOSName {
     Catnap,
     Catcollar,
     Catnip,
+    Catcorn,
 }
 
 //======================================================================================================================
@@ -46,6 +47,7 @@ impl From<String> for LibOSName {
             "catnap" => LibOSName::Catnap,
             "catcollar" => LibOSName::Catcollar,
             "catnip" => LibOSName::Catnip,
+            "catcorn" => LibOSName::Catcorn,
             _ => panic!("unkown libos"),
         }
     }

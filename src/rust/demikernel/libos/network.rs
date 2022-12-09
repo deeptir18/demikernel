@@ -9,6 +9,7 @@ use crate::{
     cornflakes::{
         CopyContext,
         HybridSgaHdr,
+        ObjEnum,
     },
     runtime::{
         fail::Fail,
@@ -30,6 +31,8 @@ use std::{
 
 #[cfg(feature = "catcollar-libos")]
 use crate::catcollar::CatcollarLibOS;
+#[cfg(feature = "catcorn-libos")]
+use crate::catcorn::CatcornLibOS;
 #[cfg(feature = "catnap-libos")]
 use crate::catnap::CatnapLibOS;
 #[cfg(feature = "catnip-libos")]
@@ -57,10 +60,9 @@ pub enum NetworkLibOS {
     Catcollar(CatcollarLibOS),
     #[cfg(feature = "catnip-libos")]
     Catnip(CatnipLibOS),
+    #[cfg(feature = "catcorn-libos")]
+    Catcorn(CatcornLibOS),
 }
-
-pub type MsgID = u32;
-pub type ConnID = usize;
 
 //======================================================================================================================
 // Associated Functions
@@ -80,6 +82,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.wait_any2(qts),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.wait_any2(qts),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.wait_any2(qts),
         }
     }
 
@@ -95,6 +99,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.wait2(qt),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.wait2(qt),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.wait(qts),
         }
     }
 
@@ -114,6 +120,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.socket(domain, socket_type, protocol),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.socket(domain, socket_type, protocol),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.socket(domain, socket_type, protocol),
         }
     }
 
@@ -128,6 +136,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.bind(sockqd, local),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.bind(sockqd, local),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.bind(sockqd, local),
         }
     }
 
@@ -142,6 +152,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.listen(sockqd, backlog),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.listen(sockqd, backlog),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.bind(sockqd, backlog),
         }
     }
 
@@ -156,6 +168,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.accept(sockqd),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.accept(sockqd),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.accept(sockqd),
         }
     }
 
@@ -184,6 +198,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.close(sockqd),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.close(sockqd),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.close(sockqd),
         }
     }
 
@@ -198,6 +214,11 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.push(sockqd, sga),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.push(sockqd, sga),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Push for demi_sgarray_t not implemented");
+                unimplemented!();
+            },
         }
     }
 
@@ -213,6 +234,11 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.push2(sockqd, data),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.push2(sockqd, data),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Push2 for demi_sgarray_t not implemented");
+                unimplemented!();
+            },
         }
     }
 
@@ -227,6 +253,11 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.pushto(sockqd, sga, to),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.pushto(sockqd, sga, to),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Pushto (udp) for demi_sgarray_t not implemented");
+                unimplemented!();
+            },
         }
     }
 
@@ -242,6 +273,11 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.pushto2(sockqd, data, remote),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.pushto2(sockqd, data, remote),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Push2to (udp) for demi_sgarray_t not implemented");
+                unimplemented!();
+            },
         }
     }
 
@@ -256,6 +292,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.pop(sockqd),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.pop(sockqd),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.pop(sockqd),
         }
     }
 
@@ -270,6 +308,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.wait(qt),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.wait(qt),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.wait(qt),
         }
     }
 
@@ -284,6 +324,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.timedwait(qt, abstime),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.timedwait(qt, abstime),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.timedwait(qt, abstime),
         }
     }
 
@@ -298,6 +340,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.wait_any(qts),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.wait_any(qts),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.wait_any(qts),
         }
     }
 
@@ -312,6 +356,11 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.sgaalloc(size),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.sgaalloc(size),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Allocation of sgarray_t not implemented for catcorn");
+                unimplemented!();
+            },
         }
     }
 
@@ -326,28 +375,16 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.sgafree(sga),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.sgafree(sga),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => {
+                warn!("Free of sgarray_t not implemented for catcorn");
+                unimplemented!();
+            },
         }
-    }
-
-    /// Pops data from a socket. Writes result into datapath metadata. Should take care of waiting for the packet too.
-    /// return receivedPkt?
-    pub fn pop_metadata(&mut self, sockqd: QDesc) -> Result<QToken, Fail> {
-        unimplemented!();
-    }
-
-    /// Will change depending on the cornflakes API
-    /// Pushes a vector of metadata objects to send with scatter-gather.
-    pub fn push_metadata_vec(&self, sockqd: QDesc, metadata_vec: &Vec<datapath_metadata_t>) -> Result<QToken, Fail> {
-        unimplemented!();
     }
 
     /// Recovers metadata from an arbitrary pointer.
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
-        unimplemented!();
-    }
-
-    /// Turns datapath buffer into metadata object.
-    pub fn get_metadata_from_buffer(&self, buffer: datapath_buffer_t) -> Result<datapath_metadata_t, Fail> {
         unimplemented!();
     }
 
@@ -361,50 +398,12 @@ impl NetworkLibOS {
         unimplemented!();
     }
 
-    /// Allocates tx buffer for application to use.
-    pub fn allocate_tx_buffer(&mut self) -> Result<(Option<datapath_buffer_t>, usize), Fail> {
-        unimplemented!();
-    }
-
-    /// Decrements ref count or drops datapath buffer manually.
-    pub fn drop_buffer(&mut self, datapath_buffer: datapath_buffer_t) -> Result<(), Fail> {
-        unimplemented!();
-    }
-
-    /// Decrements ref count on underlying datapath buffer and drops if necessary.
-    pub fn drop_metadata_vec(&mut self, metadata: datapath_metadata_t) -> Result<(), Fail> {
-        unimplemented!();
-    }
-
-    /// Clones underlying metadata and increments the reference count.
-    pub fn clone_metadata(&self, datapath_metadata: &datapath_metadata_t) -> Result<datapath_metadata_t, Fail> {
-        unimplemented!();
-    }
-
-    /// Turns ref to datapath buffer, offset and length into metadata object.
-    pub fn get_metadata_from_tx_buffer(
-        &self,
-        buf: &datapath_buffer_t,
-        offset: usize,
-        len: usize,
-    ) -> Result<datapath_metadata_t, Fail> {
-        unimplemented!();
-    }
-
     pub fn push_cornflakes_obj(
         &mut self,
         sockqd: QDesc,
         _copy_context: &mut CopyContext,
-        _cornflakes_obj: &impl HybridSgaHdr,
+        _cornflakes_obj: &ObjEnum,
     ) -> Result<QToken, Fail> {
-        unimplemented!();
-    }
-
-    pub fn release_cornflakes_obj(
-        &mut self,
-        _copy_context: &mut CopyContext,
-        _cornflakes_obj: impl HybridSgaHdr,
-    ) -> Result<(), Fail> {
         unimplemented!();
     }
 
