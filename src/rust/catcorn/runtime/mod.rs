@@ -37,6 +37,7 @@ use crate::runtime::{
         eth_addr,
         ibv_access_flags_IBV_ACCESS_LOCAL_WRITE,
         mlx5_rte_memcpy,
+        recv_mbuf_info,
     },
     network::{
         config::{
@@ -44,6 +45,7 @@ use crate::runtime::{
             TcpConfig,
             UdpConfig,
         },
+        consts::RECEIVE_BATCH_SIZE,
         types::MacAddress,
     },
     types::{
@@ -65,6 +67,51 @@ use std::{
 //==============================================================================
 // Structures
 //==============================================================================
+/// RecvMbufArray
+#[derive(Debug, PartialEq, Eq)]
+pub struct RecvMbufArray {
+    array_ptr: *mut [u8],
+}
+
+impl RecvMbufArray {
+    pub fn new(size: usize) -> RecvMbufArray {
+        let array_ptr_box = vec![0u8; size * std::mem::size_of::<recv_mbuf_info>()].into_boxed_slice();
+        let array_ptr = Box::<[u8]>::into_raw(array_ptr_box);
+        for i in 0..size {
+            let ptr = unsafe {
+                (array_ptr as *mut u8).offset((i * std::mem::size_of::<recv_mbuf_info>()) as isize)
+                    as *mut recv_mbuf_info
+            };
+            unsafe {
+                (*ptr).buf_addr = std::ptr::null_mut();
+                (*ptr).mempool = std::ptr::null_mut();
+                (*ptr).ref_count_index = 0;
+                (*ptr).rss_hash = 0;
+            }
+        }
+        RecvMbufArray { array_ptr }
+    }
+
+    pub fn as_recv_mbuf_info_array_ptr(&self) -> *mut recv_mbuf_info {
+        self.array_ptr as *mut recv_mbuf_info
+    }
+
+    pub fn get(&self, i: usize) -> *mut recv_mbuf_info {
+        unsafe {
+            (self.array_ptr as *mut u8).offset((i * std::mem::size_of::<recv_mbuf_info>()) as isize)
+                as *mut recv_mbuf_info
+        }
+    }
+}
+
+impl Drop for RecvMbufArray {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = Box::from_raw(self.array_ptr);
+        }
+    }
+}
+
 /// Mlx5GlobalContext
 pub struct Mlx5GlobalContext {
     num_threads: usize,
@@ -78,6 +125,7 @@ pub struct Mlx5Runtime {
     mlx5_global_context: Rc<Mlx5GlobalContext>,
     queue_id: u16,
     mm: MemoryManager,
+    recv_mbuf_array: Rc<RecvMbufArray>,
     pub link_addr: MacAddress,
     pub ipv4_addr: Ipv4Addr,
     pub arp_options: ArpConfig,
@@ -245,6 +293,7 @@ impl Mlx5Runtime {
             mlx5_global_context: global_context_rc,
             queue_id: 0u16,
             mm: memory_manager,
+            recv_mbuf_array: Rc::new(RecvMbufArray::new(RECEIVE_BATCH_SIZE)),
             link_addr: mac_address,
             ipv4_addr,
             arp_options,
