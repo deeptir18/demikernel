@@ -52,8 +52,19 @@ impl NetworkRuntime for Mlx5Runtime {
         buf.write_header(header_buf.mut_slice(0, header_size).unwrap());
         header_buf.incr_len(header_size);
 
-        if let Some(_inner_buf) = buf.take_body() {
-            todo!();
+        if let Some(inner_buf) = buf.take_body() {
+            match inner_buf {
+                Buffer::Heap(_dbuf) => {
+                    warn!("Transmit buffer is heap allocated");
+                    unimplemented!();
+                },
+                Buffer::CornflakesObj(_obj_enum) => {
+                    warn!("Trying to send cornflakes obj - not implemented yet");
+                },
+                Buffer::MetadataObj(data_buf) => {
+                    self.transmit_header_and_data_segment(header_buf.to_metadata(0, header_size), data_buf);
+                },
+            }
         } else {
             // no body, just header
             if header_size < MIN_PAYLOAD_SIZE {
@@ -66,7 +77,7 @@ impl NetworkRuntime for Mlx5Runtime {
             }
 
             // turn into metadata and post single metadata
-            let metadata = header_buf.to_metadata(0, header_buf.len());
+            let metadata = header_buf.to_metadata(0, header_size);
             self.transmit_header_only_segment(metadata);
         }
     }

@@ -366,18 +366,47 @@ impl Mlx5Runtime {
         return;
     }
 
-    /// Sends a "single metadata" request (header segment only).
-    fn transmit_header_only_segment(&self, header_segment: datapath_metadata_t) {
-        let (num_octowords, num_wqes) = self.wqes_required(0, 1);
+    fn transmit_header_and_data_segment(&self, header_segment: datapath_metadata_t, data_segment: datapath_metadata_t) {
+        let inline_len = 0;
+        let num_segs = 2;
+        let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs);
+        self.spin_on_available_wqes(num_wqes);
         // TODO: poll for completions while num_wqes is not available
         let ctrl_seg = self.start_dma_request(
             num_octowords,
             num_wqes,
-            0,
-            1,
+            inline_len,
+            num_segs,
             MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
         );
+        let mut dpseg =
+            unsafe { custom_mlx5_dpseg_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _), 0) };
+        let mut completion = unsafe {
+            custom_mlx5_completion_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _))
+        };
+        let (curr_dpseg, curr_completion) = self.post_pcie_request(header_segment, dpseg, completion);
+        dpseg = curr_dpseg;
+        completion = curr_completion;
+        let _ = self.post_pcie_request(data_segment, dpseg, completion);
+        self.finish_dma_request(num_wqes);
+        self.ring_doorbell(ctrl_seg);
+        self.poll_for_completions();
+    }
+
+    /// Sends a "single metadata" request (header segment only).
+    fn transmit_header_only_segment(&self, header_segment: datapath_metadata_t) {
+        let inline_len = 0;
+        let num_segs = 1;
+        let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs);
         self.spin_on_available_wqes(num_wqes);
+        // TODO: poll for completions while num_wqes is not available
+        let ctrl_seg = self.start_dma_request(
+            num_octowords,
+            num_wqes,
+            inline_len,
+            num_segs,
+            MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+        );
         let dpseg_start =
             unsafe { custom_mlx5_dpseg_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _), 0) };
         let completion_start = unsafe {

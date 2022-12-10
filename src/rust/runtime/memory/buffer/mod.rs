@@ -59,8 +59,12 @@ impl Buffer {
                 cornflakes_obj.trim(nbytes);
             },
             #[cfg(feature = "libmlx5")]
-            Buffer::MetadataObj(_metadata) => {
-                unimplemented!();
+            Buffer::MetadataObj(metadata) => {
+                let cur_len = metadata.data_len();
+                let cur_offset = metadata.offset();
+                metadata
+                    .set_data_len_and_offset(cur_len - nbytes, cur_offset + nbytes)
+                    .unwrap();
             },
         }
     }
@@ -76,8 +80,10 @@ impl Buffer {
                 cornflakes_obj.adjust(nbytes);
             },
             #[cfg(feature = "libmlx5")]
-            Buffer::MetadataObj(_metadata) => {
-                unimplemented!();
+            Buffer::MetadataObj(metadata) => {
+                let cur_len = metadata.data_len();
+                let cur_offset = metadata.offset();
+                metadata.set_data_len_and_offset(cur_len - nbytes, cur_offset).unwrap();
             },
         }
     }

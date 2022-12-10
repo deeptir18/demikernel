@@ -22,6 +22,7 @@ pub struct CornflakesObj {
     copy_context: Vec<datapath_metadata_t>,
     obj: ObjEnum,
     start_offset: usize,
+    reference_len: usize,
     total_data_len: usize,
 }
 
@@ -37,6 +38,7 @@ impl CornflakesObj {
             obj: object,
             copy_context: copy_context.to_metadata_vec(),
             start_offset: 0,
+            reference_len: total_data_len,
             total_data_len,
         }
     }
@@ -46,15 +48,16 @@ impl CornflakesObj {
     }
 
     pub fn len(&self) -> usize {
-        self.total_data_len - self.start_offset
+        self.reference_len;
     }
 
     pub fn trim(&mut self, nbytes: usize) {
         self.start_offset += nbytes;
+        self.reference_len -= nbytes;
     }
 
     pub fn adjust(&mut self, nbytes: usize) {
-        self.total_data_len -= nbytes;
+        self.reference_len -= nbytes;
     }
 
     pub fn full_header_size(&self) -> usize {
