@@ -6,17 +6,20 @@
 //==============================================================================
 
 use super::Mlx5Runtime;
-use crate::runtime::{
-    libmlx5::mlx5_bindings::custom_mlx5_gather_rx,
-    memory::Buffer,
-    network::{
-        consts::RECEIVE_BATCH_SIZE,
-        NetworkRuntime,
-        PacketBuf,
-    },
-    types::{
-        datapath_metadata_t,
-        datapath_recovery_info_t,
+use crate::{
+    inetstack::protocols::ethernet2::MIN_PAYLOAD_SIZE,
+    runtime::{
+        libmlx5::mlx5_bindings::custom_mlx5_gather_rx,
+        memory::Buffer,
+        network::{
+            consts::RECEIVE_BATCH_SIZE,
+            NetworkRuntime,
+            PacketBuf,
+        },
+        types::{
+            datapath_metadata_t,
+            datapath_recovery_info_t,
+        },
     },
 };
 use arrayvec::ArrayVec;
@@ -30,11 +33,42 @@ use crate::timer;
 
 /// Network Runtime Trait Implementation for DPDK Runtime
 impl NetworkRuntime for Mlx5Runtime {
-    fn transmit(&self, _buf: Box<dyn PacketBuf>) {
-        // 1: inline the packet header
-        // 2: for metadata object, get PCI entry directly based on extra offset nd length
-        // 3: for cornflakes object, need to do something special
-        unimplemented!();
+    fn transmit(&self, buf: Box<dyn PacketBuf>) {
+        // 1: allocate a tx mbuf for potentially the packet header and the object header
+        let header_buf_option = match self.mm.alloc_tx_buffer() {
+            Ok(buf_option) => buf_option,
+            Err(e) => panic!("Failed to allocate header mbuf: {:?}", e.cause),
+        };
+        let (mut header_buf, max_len) = match header_buf_option {
+            Some((buf, max_len)) => (buf, max_len),
+            None => {
+                panic!("Failed to allocate header mbuf; returned None.");
+            },
+        };
+
+        // write the header into the given buffer
+        let header_size = buf.header_size();
+        assert!(header_size <= max_len);
+        buf.write_header(header_buf.mut_slice(0, header_size).unwrap());
+        header_buf.incr_len(header_size);
+
+        if let Some(_inner_buf) = buf.take_body() {
+            todo!();
+        } else {
+            // no body, just header
+            if header_size < MIN_PAYLOAD_SIZE {
+                let padding_bytes = MIN_PAYLOAD_SIZE - header_size;
+                let padding_buf = header_buf.mut_slice(header_size, padding_bytes).unwrap();
+                for byte in padding_buf {
+                    *byte = 0;
+                }
+                header_buf.incr_len(padding_bytes);
+            }
+
+            // turn into metadata and post single metadata
+            let metadata = header_buf.to_metadata(0, header_buf.len());
+            self.transmit_header_only_segment(metadata);
+        }
     }
 
     fn receive(&self) -> ArrayVec<Buffer, RECEIVE_BATCH_SIZE> {

@@ -52,7 +52,7 @@ pub fn pack_result(_rt: Rc<Mlx5Runtime>, result: OperationResult, qd: QDesc, qt:
         OperationResult::Pop(addr, bytes) => {
             // turn the address Buffer into a datapath metadata t
             match bytes {
-                Buffer::Heap(dbuf) => {
+                Buffer::Heap(_dbuf) => {
                     warn!("Why is pop returning a heap allocated dbuf");
                     unimplemented!();
                 },

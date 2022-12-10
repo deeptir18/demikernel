@@ -19,7 +19,13 @@ use super::{
 use crate::runtime::{
     fail::Fail,
     libmlx5::mlx5_bindings::{
+        custom_mlx5_add_completion_info,
+        custom_mlx5_add_dpseg,
         custom_mlx5_alloc_global_context,
+        custom_mlx5_completion_start,
+        custom_mlx5_dpseg_start,
+        custom_mlx5_fill_in_hdr_segment,
+        custom_mlx5_finish_single_transmission,
         custom_mlx5_get_global_context_size,
         custom_mlx5_get_per_thread_context,
         custom_mlx5_get_per_thread_context_size,
@@ -28,16 +34,28 @@ use crate::runtime::{
         custom_mlx5_init_rx_mempools,
         custom_mlx5_init_rxq,
         custom_mlx5_init_txq,
+        custom_mlx5_num_octowords,
+        custom_mlx5_num_wqes_available,
+        custom_mlx5_num_wqes_required,
         custom_mlx5_pci_addr,
         custom_mlx5_pci_str_to_addr,
         custom_mlx5_per_thread_context,
+        custom_mlx5_post_transmissions,
+        custom_mlx5_process_completions,
         custom_mlx5_qs_init_flows,
+        custom_mlx5_refcnt_update_or_free,
         custom_mlx5_set_rx_mempool_ptr,
         custom_mlx5_teardown,
+        custom_mlx5_transmission_info,
         eth_addr,
         ibv_access_flags_IBV_ACCESS_LOCAL_WRITE,
         mlx5_rte_memcpy,
+        mlx5_wqe_ctrl_seg,
+        mlx5_wqe_data_seg,
         recv_mbuf_info,
+        registered_mempool,
+        MLX5_ETH_WQE_L3_CSUM,
+        MLX5_ETH_WQE_L4_CSUM,
     },
     network::{
         config::{
@@ -51,6 +69,7 @@ use crate::runtime::{
     types::{
         datapath_buffer_t,
         datapath_metadata_t,
+        datapath_recovery_info_t,
     },
     Runtime,
 };
@@ -63,6 +82,8 @@ use std::{
     rc::Rc,
     time::Duration,
 };
+
+const COMPLETION_BUDGET: usize = 32;
 
 //==============================================================================
 // Structures
@@ -300,6 +321,154 @@ impl Mlx5Runtime {
             tcp_options,
             udp_options,
         })
+    }
+
+    /// For a particular number of segments and inline length, return wqes required
+    fn wqes_required(&self, inline_len: usize, num_segs: usize) -> (usize, usize) {
+        let num_octowords = unsafe { custom_mlx5_num_octowords(inline_len as _, num_segs as _) };
+        let num_wqes = unsafe { custom_mlx5_num_wqes_required(num_octowords as _) };
+        (num_octowords as _, num_wqes as _)
+    }
+
+    /// Fill in the header
+    fn start_dma_request(
+        &self,
+        num_octowords: usize,
+        num_wqes: usize,
+        inline_len: usize,
+        num_segs: usize,
+        flags: i32,
+    ) -> *mut mlx5_wqe_ctrl_seg {
+        unsafe {
+            custom_mlx5_fill_in_hdr_segment(
+                self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                num_octowords as _,
+                num_wqes as _,
+                inline_len as _,
+                num_segs as _,
+                flags as _,
+            )
+        }
+    }
+
+    /// Spins on waiting for available wqes.
+    fn spin_on_available_wqes(&self, num_wqes_needed: usize) {
+        let mut curr_available_wqes: usize = unsafe {
+            custom_mlx5_num_wqes_available(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _)) as usize
+        };
+        while num_wqes_needed < curr_available_wqes {
+            // because we don't support batching yet, just poll for completions
+            self.poll_for_completions();
+            curr_available_wqes = unsafe {
+                custom_mlx5_num_wqes_available(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _))
+            } as usize;
+        }
+        return;
+    }
+
+    /// Sends a "single metadata" request (header segment only).
+    fn transmit_header_only_segment(&self, header_segment: datapath_metadata_t) {
+        let (num_octowords, num_wqes) = self.wqes_required(0, 1);
+        // TODO: poll for completions while num_wqes is not available
+        let ctrl_seg = self.start_dma_request(
+            num_octowords,
+            num_wqes,
+            0,
+            1,
+            MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+        );
+        self.spin_on_available_wqes(num_wqes);
+        let dpseg_start =
+            unsafe { custom_mlx5_dpseg_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _), 0) };
+        let completion_start = unsafe {
+            custom_mlx5_completion_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _))
+        };
+        let _ = self.post_pcie_request(header_segment, dpseg_start, completion_start);
+        self.finish_dma_request(num_wqes);
+        self.ring_doorbell(ctrl_seg);
+        self.poll_for_completions();
+    }
+
+    /// Sends the given metadata (and rings doorbell).
+    /// Increments the reference count on the metadata before sending.
+    /// Polls for completions before returning.
+    fn post_pcie_request(
+        &self,
+        metadata: datapath_metadata_t,
+        curr_dpseg: *mut mlx5_wqe_data_seg,
+        curr_completion: *mut custom_mlx5_transmission_info,
+    ) -> (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info) {
+        // increment the reference count on the metadata (for NIC access)
+        unsafe {
+            match metadata.recovery_info {
+                datapath_recovery_info_t { ofed_recovery_info } => {
+                    custom_mlx5_refcnt_update_or_free(
+                        ofed_recovery_info.mempool as _,
+                        metadata.buffer,
+                        ofed_recovery_info.index as _,
+                        -1i8,
+                    );
+                    debug!(
+                        "{}",
+                        format!(
+                            "Posting buffer: len = {}, off = {}, buf addr = {:?}",
+                            metadata.data_len(),
+                            metadata.offset(),
+                            metadata.buffer
+                        )
+                    );
+                    (
+                        custom_mlx5_add_dpseg(
+                            self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                            curr_dpseg,
+                            metadata.buffer,
+                            ofed_recovery_info.mempool as *mut registered_mempool,
+                            metadata.offset() as _,
+                            metadata.data_len() as _,
+                        ),
+                        custom_mlx5_add_completion_info(
+                            self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                            curr_completion,
+                            metadata.buffer,
+                            ofed_recovery_info.mempool as *mut registered_mempool,
+                        ),
+                    )
+                },
+            }
+        }
+    }
+
+    /// "Finishes" a transmission onto the ring buffer by updating local ring buffer state.
+    fn finish_dma_request(&self, num_wqes_used: usize) {
+        unsafe {
+            custom_mlx5_finish_single_transmission(
+                self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                num_wqes_used as _,
+            );
+        }
+    }
+
+    fn ring_doorbell(&self, ctrl_seg: *mut mlx5_wqe_ctrl_seg) {
+        if unsafe {
+            custom_mlx5_post_transmissions(
+                self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                ctrl_seg,
+            ) != 0
+        } {
+            panic!("Failed to ring doorbell.");
+        }
+    }
+
+    fn poll_for_completions(&self) {
+        if unsafe {
+            custom_mlx5_process_completions(
+                self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _),
+                COMPLETION_BUDGET as _,
+            )
+        } != 0
+        {
+            panic!("Failed to process completions.");
+        }
     }
 
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {

@@ -51,7 +51,7 @@ pub type MempoolID = u64;
 pub struct ofed_recovery_info_t {
     /// Pointer to index within memory pool (drivers implementation)
     pub index: usize,
-    /// Mempool pointer
+    /// Mempool pointer (*mut registered_mempool)
     pub mempool: *mut ::std::os::raw::c_void,
 }
 
@@ -70,7 +70,7 @@ impl std::fmt::Debug for datapath_recovery_info_t {
                 datapath_recovery_info_t { ofed_recovery_info } => f
                     .debug_struct("ofed_recovery_info")
                     .field("index", &ofed_recovery_info.index)
-                    .field("mempool", &ofed_recovery_info.mempool)
+                    .field("registered_mempool", &ofed_recovery_info.mempool)
                     .finish(),
             }
         }
@@ -130,7 +130,8 @@ impl Drop for datapath_metadata_t {
                     #[cfg(feature = "libmlx5")]
                     {
                         crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
-                            ofed_recovery_info.mempool as _,
+                            ofed_recovery_info.mempool
+                                as *mut crate::runtime::libmlx5::mlx5_bindings::registered_mempool,
                             self.buffer,
                             ofed_recovery_info.index as _,
                             -1i8,
@@ -158,7 +159,7 @@ impl Clone for datapath_metadata_t {
                         #[cfg(feature = "libmlx5")]
                         {
                             crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
-                                ofed_info.mempool as _,
+                                ofed_info.mempool as *mut crate::runtime::libmlx5::mlx5_bindings::registered_mempool,
                                 self.buffer,
                                 ofed_info.index as _,
                                 1i8,
@@ -233,9 +234,23 @@ pub struct datapath_buffer_t {
     pub recovery_info: datapath_recovery_info_t,
 }
 
+impl AsRef<[u8]> for datapath_buffer_t {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.buffer as *mut u8, self.data_len) }
+    }
+}
+impl AsMut<[u8]> for datapath_buffer_t {
+    fn as_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.buffer as *mut u8, self.data_len) }
+    }
+}
+
 impl Drop for datapath_buffer_t {
     fn drop(&mut self) {
         // decrement reference count for buffer by 1
+        if self.buffer.is_null() {
+            return;
+        }
         #[cfg(feature = "libmlx5")]
         {
             unsafe {
@@ -244,7 +259,7 @@ impl Drop for datapath_buffer_t {
                         ofed_recovery_info: ofed_info,
                     } => {
                         crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
-                            ofed_info.mempool as _,
+                            ofed_info.mempool as *mut crate::runtime::libmlx5::mlx5_bindings::registered_mempool,
                             self.buffer,
                             ofed_info.index as _,
                             -1i8,
@@ -270,12 +285,42 @@ impl datapath_buffer_t {
         Ok(())
     }
 
+    pub fn mut_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8], Fail> {
+        if len <= self.data_len {
+            unsafe {
+                return Ok(std::slice::from_raw_parts_mut(
+                    (self.buffer as *mut u8).offset(start as isize),
+                    len,
+                ));
+            }
+        } else {
+            return Err(Fail::new(
+                libc::EINVAL,
+                &format!(
+                    "Cannot get mut slice of datapath buffer [0, {}] with total len of {}",
+                    len, self.data_len
+                ),
+            ));
+        }
+    }
+
+    pub fn incr_len(&mut self, len: usize) {
+        self.data_len += len;
+    }
+
+    pub fn len(&self) -> usize {
+        self.data_len
+    }
+
     pub fn as_ref(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.buffer as *mut u8, self.data_len) }
     }
 
     pub fn to_metadata(&self, off: usize, len: usize) -> datapath_metadata_t {
         // should increment the reference count by 1
+        if self.buffer.is_null() {
+            panic!("Calling to metadata with datapath_buffer with null buffer addr");
+        }
         #[cfg(feature = "libmlx5")]
         {
             unsafe {
@@ -284,7 +329,7 @@ impl datapath_buffer_t {
                         ofed_recovery_info: ofed_info,
                     } => {
                         crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
-                            ofed_info.mempool as _,
+                            ofed_info.mempool as *mut crate::runtime::libmlx5::mlx5_bindings::registered_mempool,
                             self.buffer,
                             ofed_info.index as _,
                             1i8,
