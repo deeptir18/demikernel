@@ -4,8 +4,15 @@
 //==============================================================================
 // Imports
 //==============================================================================
-use self::runtime::Mlx5Runtime;
+use self::{
+    interop::pack_result,
+    runtime::Mlx5Runtime,
+};
 use crate::{
+    cornflakes::{
+        CopyContext,
+        ObjEnum,
+    },
     demikernel::config::Config,
     inetstack::{
         operations::OperationResult,
@@ -14,7 +21,10 @@ use crate::{
     runtime::{
         fail::Fail,
         libmlx5::mlx5_bindings::custom_mlx5_err_to_str,
-        memory::MemoryRuntime,
+        memory::{
+            Buffer,
+            CornflakesObj,
+        },
         timer::{
             Timer,
             TimerRc,
@@ -24,6 +34,7 @@ use crate::{
             datapath_metadata_t,
             demi_qresult_t,
             demi_sgarray_t,
+            MempoolID,
         },
         QDesc,
         QToken,
@@ -77,7 +88,7 @@ macro_rules! access(
 );
 
 mod config;
-//mod interop;
+mod interop;
 mod memory;
 pub mod runtime;
 
@@ -90,6 +101,7 @@ pub struct CatcornLibOS {
     scheduler: Scheduler,
     inetstack: InetStack,
     rt: Rc<Mlx5Runtime>,
+    copying_threshold: usize,
 }
 
 //==============================================================================
@@ -132,16 +144,17 @@ impl CatcornLibOS {
             inetstack,
             scheduler,
             rt,
+            copying_threshold: 0,
         })
     }
 
     /// Create a push request for Demikernel to asynchronously write data from `sga` to the
     /// IO connection represented by `qd`. This operation returns immediately with a `QToken`.
     /// The data has been written when [`wait`ing](Self::wait) on the QToken returns.
-    pub fn push(&mut self, qd: QDesc, sga: &demi_sgarray_t) -> Result<QToken, Fail> {
+    pub fn push(&mut self, _qd: QDesc, _sga: &demi_sgarray_t) -> Result<QToken, Fail> {
         unimplemented!();
         /*#[cfg(feature = "profiler")]
-        timer!("catnip::push");
+        timer!("catcorn::push");
         trace!("push(): qd={:?}", qd);
         match self.rt.clone_sgarray(sga) {
             Ok(buf) => {
@@ -160,7 +173,7 @@ impl CatcornLibOS {
         }*/
     }
 
-    pub fn pushto(&mut self, qd: QDesc, sga: &demi_sgarray_t, to: SocketAddrV4) -> Result<QToken, Fail> {
+    pub fn pushto(&mut self, _qd: QDesc, _sga: &demi_sgarray_t, _to: SocketAddrV4) -> Result<QToken, Fail> {
         unimplemented!();
         /*#[cfg(feature = "profiler")]
         timer!("catnip::pushto");
@@ -184,47 +197,101 @@ impl CatcornLibOS {
 
     /// Waits for an operation to complete.
     pub fn wait(&mut self, qt: QToken) -> Result<demi_qresult_t, Fail> {
-        unimplemented!();
-        /*#[cfg(feature = "profiler")]
+        #[cfg(feature = "profiler")]
         timer!("catnip::wait");
         trace!("wait(): qt={:?}", qt);
 
         let (qd, result): (QDesc, OperationResult) = self.wait2(qt)?;
-        Ok(pack_result(self.rt.clone(), result, qd, qt.into()))*/
+        Ok(pack_result(self.rt.clone(), result, qd, qt.into()))
     }
 
     /// Waits for an I/O operation to complete or a timeout to expire.
     pub fn timedwait(&mut self, qt: QToken, abstime: Option<SystemTime>) -> Result<demi_qresult_t, Fail> {
-        unimplemented!();
-        /*#[cfg(feature = "profiler")]
+        #[cfg(feature = "profiler")]
         timer!("catnip::timedwait");
         trace!("timedwait() qt={:?}, timeout={:?}", qt, abstime);
 
         let (qd, result): (QDesc, OperationResult) = self.timedwait2(qt, abstime)?;
-        Ok(pack_result(self.rt.clone(), result, qd, qt.into()))*/
+        Ok(pack_result(self.rt.clone(), result, qd, qt.into()))
     }
 
     /// Waits for any operation to complete.
     pub fn wait_any(&mut self, qts: &[QToken]) -> Result<(usize, demi_qresult_t), Fail> {
-        unimplemented!();
-        /*#[cfg(feature = "profiler")]
+        #[cfg(feature = "profiler")]
         timer!("catnip::wait_any");
         trace!("wait_any(): qts={:?}", qts);
-
         let (i, qd, r): (usize, QDesc, OperationResult) = self.wait_any2(qts)?;
-        Ok((i, pack_result(self.rt.clone(), r, qd, qts[i].into())))*/
+        Ok((i, pack_result(self.rt.clone(), r, qd, qts[i].into())))
     }
 
     /// Allocates a scatter-gather array.
-    pub fn sgaalloc(&self, size: usize) -> Result<demi_sgarray_t, Fail> {
+    pub fn sgaalloc(&self, _size: usize) -> Result<demi_sgarray_t, Fail> {
         unimplemented!();
         //self.rt.alloc_sgarray(size)
     }
 
     /// Releases a scatter-gather array.
-    pub fn sgafree(&self, sga: demi_sgarray_t) -> Result<(), Fail> {
+    pub fn sgafree(&self, _sga: demi_sgarray_t) -> Result<(), Fail> {
         unimplemented!();
         //self.rt.free_sgarray(sga)
+    }
+
+    /// Recovers metadata from raw pointer.
+    pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
+        self.rt.recover_metadata(ptr)
+    }
+
+    pub fn add_memory_pool(&self, _size: usize, _min_elts: usize) -> Result<MempoolID, Fail> {
+        unimplemented!();
+    }
+
+    pub fn allocate_buffer(&self, size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
+        self.rt.allocate_buffer(size)
+    }
+
+    pub fn allocate_tx_buffer(&self) -> Result<Option<(datapath_buffer_t, usize)>, Fail> {
+        self.rt.allocate_tx_buffer()
+    }
+
+    pub fn push_metadata(&mut self, qd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
+        #[cfg(feature = "profiler")]
+        timer!("catcorn::push");
+        trace!("push(): qd={:?}", qd);
+        let buffer_obj = Buffer::MetadataObj(metadata);
+        let future = self.do_push(qd, buffer_obj)?;
+        let handle: SchedulerHandle = match self.scheduler.insert(future) {
+            Some(handle) => handle,
+            None => return Err(Fail::new(libc::EAGAIN, "cannot schedule co-routine")),
+        };
+        let qt: QToken = handle.into_raw().into();
+        Ok(qt)
+    }
+
+    pub fn push_cornflakes_obj(
+        &mut self,
+        qd: QDesc,
+        copy_context: CopyContext,
+        cornflakes_obj: ObjEnum,
+    ) -> Result<QToken, Fail> {
+        #[cfg(feature = "profiler")]
+        timer!("catcorn::push");
+        trace!("push(): qd={:?}", qd);
+        let buffer_obj = Buffer::CornflakesObj(CornflakesObj::new(cornflakes_obj, copy_context));
+        let future = self.do_push(qd, buffer_obj)?;
+        let handle: SchedulerHandle = match self.scheduler.insert(future) {
+            Some(handle) => handle,
+            None => return Err(Fail::new(libc::EAGAIN, "cannot schedule co-routine")),
+        };
+        let qt: QToken = handle.into_raw().into();
+        Ok(qt)
+    }
+
+    pub fn set_copying_threshold(&mut self, s: usize) {
+        self.copying_threshold = s;
+    }
+
+    pub fn get_copying_threshold(&self) -> usize {
+        self.copying_threshold
     }
 }
 

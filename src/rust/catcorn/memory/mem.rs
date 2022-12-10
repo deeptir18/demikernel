@@ -1,7 +1,6 @@
 //! This module contains ways to interface with custom memory allocation/registration.
 //! How we will exactly achieve that, I am not sure yet.
 //! It seems like standard library containers don't allow custom allocators yet.
-pub const PAGESIZE: usize = 4096;
 const PGSHIFT_4KB: usize = 12;
 const PGSHIFT_2MB: usize = 21;
 const PGSHIFT_1GB: usize = 30;
@@ -13,30 +12,16 @@ const PGMASK_2MB: usize = PGSIZE_2MB - 1;
 const PGMASK_1GB: usize = PGSIZE_1GB - 1;
 
 #[inline]
-fn pgn4kb(off: usize) -> usize {
-    off >> PGSHIFT_4KB
-}
-
-#[inline]
-fn pgoff4kb(addr: *const u8) -> usize {
+pub fn pgoff4kb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_4KB
 }
 
 #[inline]
-pub fn pgn2mb(off: usize) -> usize {
-    off >> PGSHIFT_2MB
-}
-
-#[inline]
-fn pgoff2mb(addr: *const u8) -> usize {
+pub fn pgoff2mb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_2MB
 }
 
-fn pgn1gb(off: usize) -> usize {
-    off >> PGSHIFT_1GB
-}
-
-fn pgoff1gb(addr: *const u8) -> usize {
+pub fn pgoff1gb(addr: *const u8) -> usize {
     (addr as usize) & PGMASK_1GB
 }
 

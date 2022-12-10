@@ -34,16 +34,14 @@ use crate::runtime::{
     },
 };
 use mem::{
+    closest_1g_page,
+    closest_2mb_page,
+    closest_4k_page,
     PGSIZE_1GB,
     PGSIZE_2MB,
     PGSIZE_4KB,
 };
-use sizes::{
-    MempoolAllocationParams,
-    RX_MEMPOOL_DATA_LEN,
-    RX_MEMPOOL_DATA_PGSIZE,
-    RX_MEMPOOL_MIN_NUM_ITEMS,
-};
+use sizes::MempoolAllocationParams;
 use std::{
     collections::HashMap,
     rc::Rc,
@@ -55,7 +53,7 @@ const RX_MEMPOOL_ID: MempoolID = 0;
 const TX_MEMPOOL_ID: MempoolID = 1;
 pub struct Mempool {
     mempool_ptr: *mut [u8],
-    mempool_id: MempoolID,
+    _mempool_id: MempoolID,
 }
 
 // Each thread's memory manager has a:
@@ -65,7 +63,7 @@ pub struct Mempool {
 #[derive(Clone)]
 pub struct MemoryManager {
     mempools: HashMap<MempoolID, Rc<Mempool>>,
-    next_id_to_allocate: MempoolID,
+    _next_id_to_allocate: MempoolID,
     address_cache_2mb: HashMap<usize, MempoolID>,
     address_cache_4kb: HashMap<usize, MempoolID>,
     address_cache_1gb: HashMap<usize, MempoolID>,
@@ -82,7 +80,7 @@ impl Mempool {
         queue_id: usize,
         global_context: &Rc<Mlx5GlobalContext>,
         use_atomic_ops: bool,
-        mempool_id: MempoolID,
+        _mempool_id: MempoolID,
     ) -> Result<Self, Fail> {
         let mempool_box = vec![0u8; unsafe { custom_mlx5_get_registered_mempool_size() } as _].into_boxed_slice();
         let atomic_ops: u32 = match use_atomic_ops {
@@ -107,15 +105,15 @@ impl Mempool {
         }
         Ok(Mempool {
             mempool_ptr,
-            mempool_id,
+            _mempool_id,
         })
     }
 
     #[inline]
-    pub fn new_from_ptr(mempool_ptr: *mut [u8], mempool_id: MempoolID) -> Self {
+    pub fn new_from_ptr(mempool_ptr: *mut [u8], _mempool_id: MempoolID) -> Self {
         Mempool {
             mempool_ptr,
-            mempool_id,
+            _mempool_id,
         }
     }
 
@@ -158,7 +156,7 @@ impl Mempool {
     fn get_1g_pages(&self) -> Vec<usize> {
         let data_pool = self.data_mempool();
         let pgsize = unsafe { access!(data_pool, pgsize, usize) };
-        if pgsize != PGSIZE_2MB {
+        if pgsize != PGSIZE_1GB {
             return vec![];
         }
         let num_pages = unsafe { access!(data_pool, num_pages, usize) };
@@ -177,7 +175,7 @@ impl Mempool {
         }
         // recover the reference count index
         let index = unsafe { custom_mlx5_mempool_find_index(self.data_mempool(), data) };
-        if (index < 0) {
+        if index < 0 {
             unsafe {
                 custom_mlx5_mempool_free(self.data_mempool(), data);
             }
@@ -274,10 +272,60 @@ impl MemoryManager {
 
         Ok(MemoryManager {
             mempools: mempools_hashmap,
-            next_id_to_allocate: 2,
+            _next_id_to_allocate: 2,
             address_cache_2mb,
             address_cache_4kb,
             address_cache_1gb,
         })
+    }
+
+    #[inline]
+    fn find_mempool_id(&self, buf: &[u8]) -> Option<MempoolID> {
+        match self.address_cache_2mb.get(&closest_2mb_page(buf.as_ptr())) {
+            Some(m) => {
+                return Some(*m);
+            },
+            None => {},
+        }
+        match self.address_cache_4kb.get(&closest_4k_page(buf.as_ptr())) {
+            Some(m) => {
+                return Some(*m);
+            },
+            None => {},
+        }
+        match self.address_cache_1gb.get(&closest_1g_page(buf.as_ptr())) {
+            Some(m) => {
+                return Some(*m);
+            },
+            None => {},
+        }
+        return None;
+    }
+
+    pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
+        if let Some(id) = self.find_mempool_id(ptr) {
+            let mempool = self.mempools.get(&id).unwrap();
+            unsafe {
+                return Ok(Some(mempool.recover_metadata_mbuf(ptr)));
+            }
+        } else {
+            return Ok(None);
+        }
+    }
+
+    pub fn alloc_buffer(&self, _size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
+        unimplemented!();
+    }
+
+    pub fn alloc_tx_buffer(&self) -> Result<Option<(datapath_buffer_t, usize)>, Fail> {
+        let mempool = self.mempools.get(&TX_MEMPOOL_ID).unwrap();
+        let buf = match mempool.alloc_buf()? {
+            Some(buf) => buf,
+            None => {
+                return Ok(None);
+            },
+        };
+        let buf_size = unsafe { access!(mempool.data_mempool(), item_len) };
+        return Ok(Some((buf, buf_size as _)));
     }
 }

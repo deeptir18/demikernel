@@ -10,10 +10,7 @@ use crate::{
         CopyContext,
         ObjEnum,
     },
-    runtime::{
-        fail::Fail,
-        types::datapath_metadata_t,
-    },
+    runtime::types::datapath_metadata_t,
 };
 //==============================================================================
 // Structures
@@ -44,6 +41,10 @@ impl CornflakesObj {
         }
     }
 
+    pub fn obj(&self) -> &ObjEnum {
+        &self.obj
+    }
+
     pub fn len(&self) -> usize {
         self.total_data_len - self.start_offset
     }
@@ -54,5 +55,13 @@ impl CornflakesObj {
 
     pub fn adjust(&mut self, nbytes: usize) {
         self.total_data_len -= nbytes;
+    }
+
+    pub fn full_header_size(&self) -> usize {
+        self.full_header_size
+    }
+
+    pub fn copy_context_iter(&self) -> std::slice::Iter<datapath_metadata_t> {
+        self.copy_context.iter()
     }
 }

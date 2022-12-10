@@ -9,13 +9,10 @@ use crate::{
     demikernel::config::Config,
     runtime::network::types::MacAddress,
 };
-use anyhow::Error;
 use std::{
     collections::HashMap,
-    ffi::CString,
     net::Ipv4Addr,
 };
-use yaml_rust::Yaml;
 
 //======================================================================================================================
 // Associated Functions

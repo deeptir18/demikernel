@@ -3,7 +3,6 @@
 pub mod generated_objects;
 
 use crate::{
-    demikernel::libos::LibOS,
     runtime::{
         fail::Fail,
         types::{
@@ -11,6 +10,7 @@ use crate::{
             datapath_metadata_t,
         },
     },
+    LibOS,
 };
 use bitmaps::Bitmap;
 use byteorder::{
@@ -118,10 +118,10 @@ pub struct SerializationCopyBuf {
 
 impl SerializationCopyBuf {
     pub fn new(libos: &mut LibOS) -> Result<Self, Fail> {
-        let (buf_option, max_len) = libos.allocate_tx_buffer().expect("Could not allocate tx buffer");
+        let buf_option = libos.allocate_tx_buffer().expect("Could not allocate tx buffer");
 
         match buf_option {
-            Some(buf) => {
+            Some((buf, max_len)) => {
                 return Ok(SerializationCopyBuf {
                     buf,
                     total_len: max_len,
@@ -289,27 +289,27 @@ impl CopyContextRef {
         }
     }
 
-    fn as_ref(&self) -> &[u8] {
+    pub fn as_ref(&self) -> &[u8] {
         &self.datapath_metadata.as_ref()[self.start..(self.start + self.len)]
     }
 
     #[inline]
-    fn total_offset(&self) -> usize {
+    pub fn total_offset(&self) -> usize {
         self.total_offset
     }
 
     #[inline]
-    fn index(&self) -> usize {
+    pub fn index(&self) -> usize {
         self.index
     }
 
     #[inline]
-    fn offset(&self) -> usize {
+    pub fn offset(&self) -> usize {
         self.start
     }
 
     #[inline]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
 }
@@ -502,22 +502,21 @@ pub trait HybridSgaHdr {
     }
 }
 
-// #[derive(PartialEq, Eq)]
 pub struct DatapathSga {
     // buffers user has copied into
-    copy_context: CopyContext,
+    _copy_context: CopyContext,
     // zero copy entries
-    zero_copy_entries: Vec<datapath_metadata_t>,
+    _zero_copy_entries: Vec<datapath_metadata_t>,
     // actual hdr
-    header: Vec<u8>,
+    _header: Vec<u8>,
 }
 
 impl DatapathSga {
     pub fn new(copy_context: CopyContext, zero_copy_entries: Vec<datapath_metadata_t>, header: Vec<u8>) -> Self {
         DatapathSga {
-            copy_context,
-            zero_copy_entries,
-            header,
+            _copy_context: copy_context,
+            _zero_copy_entries: zero_copy_entries,
+            _header: header,
         }
     }
 }
@@ -544,11 +543,11 @@ impl std::fmt::Debug for CFBytes {
         match self {
             CFBytes::RefCounted(metadata) => f
                 .debug_struct("CFBytes zero-copy")
-                // .field("metadata", metadata)
+                .field("metadata", &metadata.as_ref())
                 .finish(),
             CFBytes::Copied(copy_context_ref) => f
                 .debug_struct("CFBytes copied")
-                // .field("metadata addr", &copy_context_ref.as_ref().as_ptr())
+                .field("metadata addr", &copy_context_ref.as_ref().as_ptr())
                 .field("start", &copy_context_ref.offset())
                 .field("len", &copy_context_ref.len())
                 .finish(),
@@ -667,7 +666,7 @@ impl HybridSgaHdr for CFBytes {
         header_buffer: &mut [u8],
         constant_header_offset: usize,
         _dynamic_header_start: usize,
-        copy_context: &mut CopyContext,
+        _copy_context: &mut CopyContext,
         zero_copy_scatter_gather_entries: &mut [datapath_metadata_t],
         ds_offset: &mut usize,
     ) -> Result<(), Fail> {

@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
+#![allow(deprecated)]
 
 pub mod name;
 pub mod network;
@@ -18,7 +19,7 @@ use self::{
 use crate::{
     cornflakes::{
         CopyContext,
-        HybridSgaHdr,
+        ObjEnum,
     },
     demikernel::config::Config,
     runtime::{
@@ -234,90 +235,60 @@ impl LibOS {
         }
     }
 
-    /// Pops data from a socket. Writes result into datapath metadata. Should take care of waiting for the packet too.
-    /// return receivedPkt?
-    pub fn pop_metadata(&mut self, sockqd: QDesc) -> Result<QToken, Fail> {
-        unimplemented!();
-    }
-
-    /// Will change depending on the cornflakes API
-    /// Pushes a vector of metadata objects to send with scatter-gather.
-    pub fn push_metadata_vec(&self, sockqd: QDesc, metadata_vec: &Vec<datapath_metadata_t>) -> Result<QToken, Fail> {
-        unimplemented!();
-    }
-    
-    /// Will change depending on the cornflakes API
-    pub fn push_metadata_t(&self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
-        unimplemented!();
-    }
     /// Recovers metadata from an arbitrary pointer.
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
-        unimplemented!();
-    }
-
-    /// Turns datapath buffer into metadata object.
-    pub fn get_metadata_from_buffer(&self, buffer: datapath_buffer_t) -> Result<datapath_metadata_t, Fail> {
-        unimplemented!();
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.recover_metadata(ptr),
+        }
     }
 
     /// Adds a memory pool in datapath's underlying allocator.
     pub fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<MempoolID, Fail> {
-        unimplemented!();
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.add_memory_pool(size, min_elts),
+        }
     }
 
     /// Allocates buffer for application to use.
     pub fn allocate_buffer(&mut self, size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
-        unimplemented!();
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.allocate_buffer(size),
+        }
     }
 
     /// Allocates tx buffer for application to use.
-    pub fn allocate_tx_buffer(&mut self) -> Result<(Option<datapath_buffer_t>, usize), Fail> {
-        unimplemented!();
-    }
-
-    /// Decrements ref count or drops datapath buffer manually.
-    pub fn drop_buffer(&mut self, datapath_buffer: datapath_buffer_t) -> Result<(), Fail> {
-        unimplemented!();
-    }
-
-    /// Decrements ref count on underlying datapath buffer and drops if necessary.
-    pub fn drop_metadata(&mut self, datapath_metadata: datapath_metadata_t) -> Result<(), Fail> {
-        unimplemented!();
-    }
-
-    /// Clones underlying metadata and increments the reference count.
-    pub fn clone_metadata(&self, datapath_metadata: &datapath_metadata_t) -> Result<datapath_metadata_t, Fail> {
-        unimplemented!();
-    }
-
-    /// Turns ref to datapath buffer, offset and length into metadata object.
-    pub fn get_metadata_from_tx_buffer(
-        &self,
-        buf: &datapath_buffer_t,
-        offset: usize,
-        len: usize,
-    ) -> Result<datapath_metadata_t, Fail> {
-        unimplemented!();
+    pub fn allocate_tx_buffer(&mut self) -> Result<Option<(datapath_buffer_t, usize)>, Fail> {
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.allocate_tx_buffer(),
+        }
     }
 
     pub fn push_cornflakes_obj(
         &mut self,
         sockqd: QDesc,
-        _copy_context: &mut CopyContext,
-        _cornflakes_obj: &impl HybridSgaHdr,
+        copy_context: CopyContext,
+        cornflakes_obj: ObjEnum,
     ) -> Result<QToken, Fail> {
-        unimplemented!();
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.push_cornflakes_obj(sockqd, copy_context, cornflakes_obj),
+        }
+    }
+
+    pub fn push_metadata(&mut self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.push_metadata(sockqd, metadata),
+        }
     }
 
     pub fn get_copying_threshold(&self) -> usize {
-        unimplemented!();
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.get_copying_threshold(),
+        }
     }
 
-    pub fn release_cornflakes_obj(
-        &mut self,
-        _copy_context: &mut CopyContext,
-        _cornflakes_obj: impl HybridSgaHdr,
-    ) -> Result<(), Fail> {
-        unimplemented!();
+    pub fn set_copying_threshold(&mut self, s: usize) {
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.set_copying_threshold(s),
+        }
     }
 }

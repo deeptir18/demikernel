@@ -15,7 +15,7 @@ use demikernel::{
         CFBytes,
         CopyContext,
         HybridSgaHdr,
-        VariableList,
+        ObjEnum,
     },
     flatbuffers::echo_fb_generated::echo_fb::{
         ListFB,
@@ -24,10 +24,9 @@ use demikernel::{
         SingleBufferFBArgs,
     },
     runtime::types::{
-        demi_sgarray_t,
         datapath_metadata_t,
-        datapath_buffer_t,
         demi_opcode_t,
+        demi_sgarray_t,
     },
     LibOS,
     LibOSName,
@@ -41,15 +40,17 @@ use byteorder::{
 };
 use std::{
     env,
+    mem::ManuallyDrop,
     net::SocketAddrV4,
     panic,
     slice,
     str::FromStr,
-    mem::ManuallyDrop,
 };
 
-use flatbuffers::{root, FlatBufferBuilder, WIPOffset};
-use std::marker::PhantomData;
+use flatbuffers::{
+    root,
+    WIPOffset,
+};
 
 #[cfg(target_os = "windows")]
 pub const AF_INET: i32 = windows::Win32::Networking::WinSock::AF_INET.0 as i32;
@@ -67,9 +68,9 @@ pub const SOCK_STREAM: i32 = libc::SOCK_STREAM;
 use demikernel::perftools::profiler;
 
 pub enum ModeCodeT {
-    MODE_CF = 0,
-    MODE_FB,
-    MODE_NONE,
+    ModeCf = 0,
+    ModeFb,
+    ModeNone,
 }
 //======================================================================================================================
 // Constants
@@ -187,7 +188,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
             demi_opcode_t::DEMI_OPC_POP => {
                 match mode {
                     // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
-                    ModeCodeT::MODE_CF => {
+                    ModeCodeT::ModeCf => {
                         let qd: QDesc = qr.qr_qd.into();
                         let pkt_wrapper: std::mem::ManuallyDrop<datapath_metadata_t> =
                             unsafe { qr.qr_value.qr_metadata };
@@ -210,46 +211,42 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                                         &mut copy_context,
                                     ));
                                 }
+                                let obj_enum = ObjEnum::Single(single_ser);
                                 // Push data.
-                                let qt: QToken = match libos.push_cornflakes_obj(qd, &mut copy_context, &mut single_ser)
-                                {
+                                let qt: QToken = match libos.push_cornflakes_obj(qd, copy_context, obj_enum) {
                                     Ok(qt) => qt,
                                     Err(e) => panic!("failed to push CF object: {:?}", e),
                                 };
                                 qtokens.push(qt);
                             },
-                            SimpleMessageType::List(size) => {
+                            SimpleMessageType::List(_size) => {
                                 let mut list_deser = ListCF::new_in();
                                 let mut list_ser = ListCF::new_in();
                                 list_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
-            
+
                                 list_ser.init_messages(list_deser.get_messages().len());
                                 let messages = list_ser.get_mut_messages();
                                 for elt in list_deser.get_messages().iter() {
-                                    messages.append(CFBytes::new(
-                                        elt.as_ref(),
-                                        &mut libos,
-                                        &mut copy_context,
-                                    ));
+                                    messages.append(CFBytes::new(elt.as_ref(), &mut libos, &mut copy_context));
                                 }
+                                let obj_enum = ObjEnum::List(list_ser);
                                 // Push data.
-                                let qt: QToken = match libos.push_cornflakes_obj(qd, &mut copy_context, &mut list_ser)
-                                {
+                                let qt: QToken = match libos.push_cornflakes_obj(qd, copy_context, obj_enum) {
                                     Ok(qt) => qt,
                                     Err(e) => panic!("failed to push CF object: {:?}", e),
                                 };
-                                qtokens.push(qt);            
+                                qtokens.push(qt);
                             },
                         }
                     },
                     // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
-                    ModeCodeT::MODE_NONE => {
+                    ModeCodeT::ModeNone => {
                         let qd: QDesc = qr.qr_qd.into();
                         let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
-                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);;
-        
+                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);
+
                         // Push data.
-                        let qt: QToken = match libos.push_metadata_t(qd, pkt) {
+                        let qt: QToken = match libos.push_metadata(qd, pkt) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
@@ -260,7 +257,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                         // }
                     },
                     // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
-                    ModeCodeT::MODE_FB => {
+                    ModeCodeT::ModeFb => {
                         let qd: QDesc = qr.qr_qd.into();
                         let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
                         let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);
@@ -268,22 +265,15 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                         let msg_type = read_message_type(&pkt)?;
                         match msg_type {
                             SimpleMessageType::Single => {
-                                let object_deser =
-                                    root::<SingleBufferFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let object_deser = root::<SingleBufferFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
                                 let args = SingleBufferFBArgs {
-                                    message: Some(
-                                        builder
-                                            .create_vector_direct::<u8>(object_deser.message().unwrap()),
-                                    ),
+                                    message: Some(builder.create_vector_direct::<u8>(object_deser.message().unwrap())),
                                 };
-                                let single_buffer_fb =
-                                    SingleBufferFB::create(&mut builder, &args);
+                                let single_buffer_fb = SingleBufferFB::create(&mut builder, &args);
                                 builder.finish(single_buffer_fb, None);
-
                             },
                             SimpleMessageType::List(size) => {
-                                let object_deser =
-                                    root::<ListFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let object_deser = root::<ListFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
                                 let args_vec: Vec<SingleBufferFBArgs> = (0..size)
                                     .map(|idx| SingleBufferFBArgs {
                                         message: Some(builder.create_vector_direct::<u8>(
@@ -304,9 +294,9 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                         }
 
                         // TODO: pkt.buffer should be set to  &self.builder.finished_data()
-                        // in order to get flatbuffer message in. 
+                        // in order to get flatbuffer message in.
                         // Have to see the finalized APIs to do this
-                        let qt: QToken = match libos.push_metadata_t(qd, pkt) {
+                        let qt: QToken = match libos.push_metadata(qd, pkt) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
@@ -333,7 +323,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
     profiler::write(&mut std::io::stdout(), None).expect("failed to write to stdout");
 
     // TODO: close socket when we get close working properly in catnip.
-    Ok(())
+    //Ok(())
 }
 
 //======================================================================================================================
@@ -442,23 +432,23 @@ fn usage(program_name: &String) {
 
 fn convert(mode_name: String) -> ModeCodeT {
     if mode_name.contains("cf_0c") || mode_name.contains("cf_1c") {
-        return ModeCodeT::MODE_CF;
+        return ModeCodeT::ModeCf;
     } else if mode_name.contains("flatbuffer") {
-        return ModeCodeT::MODE_FB;
+        return ModeCodeT::ModeFb;
     }
-    return ModeCodeT::MODE_NONE;
+    return ModeCodeT::ModeNone;
 }
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    let mut mode: ModeCodeT = ModeCodeT::MODE_NONE;
+    let mut mode: ModeCodeT = ModeCodeT::ModeNone;
     if args.len() >= 5 {
         if args[3] == "--packet_type" {
             mode = convert(args[4].to_string());
         }
     }
-    
+
     if args.len() >= 3 {
         let sockaddr: SocketAddrV4 = SocketAddrV4::from_str(&args[2])?;
         if args[1] == "--server" {

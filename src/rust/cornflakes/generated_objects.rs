@@ -8,7 +8,6 @@ use crate::{
         OFFSET_FIELD,
         SIZE_FIELD,
     },
-    demikernel::libos::LibOS,
     runtime::{
         fail::Fail,
         types::datapath_metadata_t,
@@ -16,15 +15,12 @@ use crate::{
 };
 
 use bitmaps::Bitmap;
-use std::{
-    default::Default,
-    marker::Sized,
-};
+use std::marker::Sized;
 
-pub const SingleBufferCF_NUM_U32_BITMAPS: usize = 1;
+pub const SINGLE_BUFFER_CF_NUM_U32_BITMAPS: usize = 1;
 
 pub struct SingleBufferCF {
-    bitmap: [Bitmap<32>; SingleBufferCF_NUM_U32_BITMAPS],
+    bitmap: [Bitmap<32>; SINGLE_BUFFER_CF_NUM_U32_BITMAPS],
     message: CFBytes,
 }
 
@@ -71,7 +67,7 @@ impl SingleBufferCF {
 impl HybridSgaHdr for SingleBufferCF {
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
     const NUMBER_OF_FIELDS: usize = 1;
-    const NUM_U32_BITMAPS: usize = SingleBufferCF_NUM_U32_BITMAPS;
+    const NUM_U32_BITMAPS: usize = SINGLE_BUFFER_CF_NUM_U32_BITMAPS;
 
     #[inline]
     fn new_in() -> Self
@@ -79,7 +75,7 @@ impl HybridSgaHdr for SingleBufferCF {
         Self: Sized,
     {
         SingleBufferCF {
-            bitmap: [Bitmap::<32>::new(); SingleBufferCF_NUM_U32_BITMAPS],
+            bitmap: [Bitmap::<32>::new(); SINGLE_BUFFER_CF_NUM_U32_BITMAPS],
             message: CFBytes::default(),
         }
     }
@@ -245,10 +241,10 @@ impl HybridSgaHdr for SingleBufferCF {
     }
 }
 
-pub const ListCF_NUM_U32_BITMAPS: usize = 1;
+pub const LIST_CF_NUM_U32_BITMAPS: usize = 1;
 
 pub struct ListCF {
-    bitmap: [Bitmap<32>; ListCF_NUM_U32_BITMAPS],
+    bitmap: [Bitmap<32>; LIST_CF_NUM_U32_BITMAPS],
     messages: VariableList<CFBytes>,
 }
 
@@ -302,7 +298,7 @@ impl ListCF {
 impl HybridSgaHdr for ListCF {
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
     const NUMBER_OF_FIELDS: usize = 1;
-    const NUM_U32_BITMAPS: usize = ListCF_NUM_U32_BITMAPS;
+    const NUM_U32_BITMAPS: usize = LIST_CF_NUM_U32_BITMAPS;
 
     #[inline]
     fn new_in() -> Self
@@ -310,7 +306,7 @@ impl HybridSgaHdr for ListCF {
         Self: Sized,
     {
         ListCF {
-            bitmap: [Bitmap::<32>::new(); ListCF_NUM_U32_BITMAPS],
+            bitmap: [Bitmap::<32>::new(); LIST_CF_NUM_U32_BITMAPS],
             messages: VariableList::new_in(),
         }
     }

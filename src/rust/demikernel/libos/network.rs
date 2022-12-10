@@ -4,11 +4,10 @@
 //======================================================================================================================
 // Imports
 //======================================================================================================================
-
+#![allow(deprecated)]
 use crate::{
     cornflakes::{
         CopyContext,
-        HybridSgaHdr,
         ObjEnum,
     },
     runtime::{
@@ -100,7 +99,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.wait2(qt),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => libos.wait(qts),
+            NetworkLibOS::Catcorn(libos) => libos.wait2(qt),
         }
     }
 
@@ -153,7 +152,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.listen(sockqd, backlog),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => libos.bind(sockqd, backlog),
+            NetworkLibOS::Catcorn(libos) => libos.listen(sockqd, backlog),
         }
     }
 
@@ -184,6 +183,8 @@ impl NetworkLibOS {
             NetworkLibOS::Catcollar(libos) => libos.connect(sockqd, remote),
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.connect(sockqd, remote),
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.connect(sockqd, remote),
         }
     }
 
@@ -215,7 +216,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.push(sockqd, sga),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Push for demi_sgarray_t not implemented");
                 unimplemented!();
             },
@@ -235,7 +236,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.push2(sockqd, data),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Push2 for demi_sgarray_t not implemented");
                 unimplemented!();
             },
@@ -254,7 +255,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.pushto(sockqd, sga, to),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Pushto (udp) for demi_sgarray_t not implemented");
                 unimplemented!();
             },
@@ -274,7 +275,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.pushto2(sockqd, data, remote),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Push2to (udp) for demi_sgarray_t not implemented");
                 unimplemented!();
             },
@@ -357,7 +358,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.sgaalloc(size),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Allocation of sgarray_t not implemented for catcorn");
                 unimplemented!();
             },
@@ -376,7 +377,7 @@ impl NetworkLibOS {
             #[cfg(feature = "catnip-libos")]
             NetworkLibOS::Catnip(libos) => libos.sgafree(sga),
             #[cfg(feature = "catcorn-libos")]
-            NetworkLibOS::Catcorn(libos) => {
+            NetworkLibOS::Catcorn(_libos) => {
                 warn!("Free of sgarray_t not implemented for catcorn");
                 unimplemented!();
             },
@@ -385,29 +386,98 @@ impl NetworkLibOS {
 
     /// Recovers metadata from an arbitrary pointer.
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
-        unimplemented!();
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.recover_metadata(ptr),
+            _ => {
+                warn!("Recover metadata function only implemented for Catcorn.");
+                unimplemented!();
+            },
+        }
     }
 
     /// Adds a memory pool in datapath's underlying allocator.
     pub fn add_memory_pool(&self, size: usize, min_elts: usize) -> Result<MempoolID, Fail> {
-        unimplemented!();
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.add_memory_pool(size, min_elts),
+            _ => {
+                warn!("add memory pool function only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
     }
 
     /// Allocates buffer for application to use.
     pub fn allocate_buffer(&mut self, size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
-        unimplemented!();
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.allocate_buffer(size),
+            _ => {
+                warn!("Allocate buffer function only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
+    }
+
+    /// Allocates buffer for application to use.
+    pub fn allocate_tx_buffer(&self) -> Result<Option<(datapath_buffer_t, usize)>, Fail> {
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.allocate_tx_buffer(),
+            _ => {
+                warn!("Allocate tx buffer function only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
     }
 
     pub fn push_cornflakes_obj(
         &mut self,
         sockqd: QDesc,
-        _copy_context: &mut CopyContext,
-        _cornflakes_obj: &ObjEnum,
+        copy_context: CopyContext,
+        cornflakes_obj: ObjEnum,
     ) -> Result<QToken, Fail> {
-        unimplemented!();
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.push_cornflakes_obj(sockqd, copy_context, cornflakes_obj),
+            _ => {
+                warn!("push cornflakes obj only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
+    }
+
+    pub fn push_metadata(&mut self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.push_metadata(sockqd, metadata),
+            _ => {
+                warn!("push metadata only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
     }
 
     pub fn get_copying_threshold(&self) -> usize {
-        unimplemented!();
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.get_copying_threshold(),
+            _ => {
+                warn!("get copying threshold only implemented for catcorn");
+                unimplemented!();
+            },
+        }
+    }
+
+    pub fn set_copying_threshold(&mut self, t: usize) {
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.set_copying_threshold(t),
+            _ => {
+                warn!("get copying threshold only implemented for catcorn");
+                unimplemented!();
+            },
+        }
     }
 }

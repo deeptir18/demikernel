@@ -20,10 +20,8 @@ use std::fmt::Debug;
 // Exports
 //==============================================================================
 
-use crate::{
-    cornflakes::ObjEnum,
-    runtime::types::datapath_metadata_t,
-};
+#[cfg(feature = "libmlx5")]
+use crate::runtime::types::datapath_metadata_t;
 
 pub use self::databuffer::DataBuffer;
 #[cfg(feature = "libdpdk")]

@@ -46,12 +46,11 @@ use crate::runtime::{
         },
         types::MacAddress,
     },
+    types::{
+        datapath_buffer_t,
+        datapath_metadata_t,
+    },
     Runtime,
-};
-use anyhow::{
-    bail,
-    format_err,
-    Error,
 };
 use std::{
     boxed::Box,
@@ -206,8 +205,8 @@ impl Mlx5Runtime {
         pci_address: String,
         arp_table: HashMap<Ipv4Addr, MacAddress>,
         disable_arp: bool,
-        use_jumbo_frames: bool,
-        mtu: u16,
+        _use_jumbo_frames: bool,
+        _mtu: u16,
         mss: usize,
         tcp_checksum_offload: bool,
         udp_checksum_offload: bool,
@@ -252,6 +251,18 @@ impl Mlx5Runtime {
             tcp_options,
             udp_options,
         })
+    }
+
+    pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
+        self.mm.recover_metadata(ptr)
+    }
+
+    pub fn allocate_buffer(&self, size: usize) -> Result<Option<datapath_buffer_t>, Fail> {
+        self.mm.alloc_buffer(size)
+    }
+
+    pub fn allocate_tx_buffer(&self) -> Result<Option<(datapath_buffer_t, usize)>, Fail> {
+        self.mm.alloc_tx_buffer()
     }
 }
 

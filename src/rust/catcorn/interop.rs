@@ -2,9 +2,8 @@
 // Licensed under the MIT license.
 
 use crate::{
-    catnip::DPDKRuntime,
+    catcorn::Mlx5Runtime,
     runtime::{
-        memory::MemoryRuntime,
         types::{
             demi_accept_result_t,
             demi_opcode_t,
@@ -20,7 +19,7 @@ use std::{
     rc::Rc,
 };
 
-pub fn pack_result(rt: Rc<DPDKRuntime>, result: OperationResult, qd: QDesc, qt: u64) -> demi_qresult_t {
+pub fn pack_result(_rt: Rc<Mlx5Runtime>, result: OperationResult, qd: QDesc, qt: u64) -> demi_qresult_t {
     match result {
         OperationResult::Connect => demi_qresult_t {
             qr_opcode: demi_opcode_t::DEMI_OPC_CONNECT,
@@ -49,10 +48,9 @@ pub fn pack_result(rt: Rc<DPDKRuntime>, result: OperationResult, qd: QDesc, qt: 
             qr_qt: qt,
             qr_value: unsafe { mem::zeroed() },
         },
-        OperationResult::Pop(addr, bytes) => {
+        OperationResult::Pop(_addr, _bytes) => {
             todo!();
             // TODO: pop should take the ofed packet and turn it into a datapath_metadata_t
-            unimplemented!();
         },
         /*match rt.into_sgarray(bytes) {
             Ok(mut sga) => {

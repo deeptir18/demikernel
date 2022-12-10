@@ -157,14 +157,12 @@ impl Clone for datapath_metadata_t {
                         // magically access the libmlx5 bindings
                         #[cfg(feature = "libmlx5")]
                         {
-                            unsafe {
-                                crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
-                                    ofed_info.mempool as _,
-                                    self.buffer,
-                                    ofed_info.index as _,
-                                    1i8,
-                                )
-                            };
+                            crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
+                                ofed_info.mempool as _,
+                                self.buffer,
+                                ofed_info.index as _,
+                                1i8,
+                            );
                         }
                         #[cfg(not(feature = "libmlx5"))]
                         {
