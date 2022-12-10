@@ -26,8 +26,8 @@ use crate::{
         },
     },
 };
-use ::arrayvec::ArrayVec;
-use ::std::mem;
+use arrayvec::ArrayVec;
+use std::mem;
 
 #[cfg(feature = "profiler")]
 use crate::timer;

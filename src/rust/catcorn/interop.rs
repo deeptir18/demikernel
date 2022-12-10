@@ -4,6 +4,7 @@
 use crate::{
     catcorn::Mlx5Runtime,
     runtime::{
+        memory::Buffer,
         types::{
             demi_accept_result_t,
             demi_opcode_t,
@@ -48,44 +49,51 @@ pub fn pack_result(_rt: Rc<Mlx5Runtime>, result: OperationResult, qd: QDesc, qt:
             qr_qt: qt,
             qr_value: unsafe { mem::zeroed() },
         },
-        OperationResult::Pop(_addr, _bytes) => {
-            todo!();
-            // TODO: pop should take the ofed packet and turn it into a datapath_metadata_t
-        },
-        /*match rt.into_sgarray(bytes) {
-            Ok(mut sga) => {
-                if let Some(endpoint) = addr {
-                    let saddr: libc::sockaddr_in = {
-                        // TODO: check the following byte order conversion.
-                        libc::sockaddr_in {
-                            sin_family: libc::AF_INET as u16,
-                            sin_port: endpoint.port().into(),
-                            sin_addr: libc::in_addr {
-                                s_addr: u32::from_le_bytes(endpoint.ip().octets()),
-                            },
-                            sin_zero: [0; 8],
-                        }
+        OperationResult::Pop(addr, bytes) => {
+            // turn the address Buffer into a datapath metadata t
+            match bytes {
+                Buffer::Heap(dbuf) => {
+                    warn!("Why is pop returning a heap allocated dbuf");
+                    unimplemented!();
+                },
+                Buffer::CornflakesObj(_) => {
+                    warn!("Ok there's like no way pop should have a cornflakes obj");
+                    unimplemented!();
+                },
+                Buffer::MetadataObj(mut metadata) => {
+                    debug!(
+                        "Pop returned metadata obj with addr {:?}, offset {}, len {}",
+                        metadata.buffer, metadata.offset, metadata.len
+                    );
+                    if let Some(endpoint) = addr {
+                        let saddr: libc::sockaddr_in = {
+                            // TODO: check the following byte order conversion.
+                            libc::sockaddr_in {
+                                sin_family: libc::AF_INET as u16,
+                                sin_port: endpoint.port().into(),
+                                sin_addr: libc::in_addr {
+                                    s_addr: u32::from_le_bytes(endpoint.ip().octets()),
+                                },
+                                sin_zero: [0; 8],
+                            }
+                        };
+                        metadata.metadata_addr =
+                            Some(unsafe { mem::transmute::<libc::sockaddr_in, libc::sockaddr>(saddr) });
+                    }
+
+                    let metadata_drop = std::mem::ManuallyDrop::new(metadata);
+                    let qr_value = demi_qr_value_t {
+                        qr_metadata: metadata_drop,
                     };
-                    sga.sga_addr = unsafe { mem::transmute::<libc::sockaddr_in, libc::sockaddr>(saddr) };
-                }
-                let qr_value = demi_qr_value_t { sga };
-                demi_qresult_t {
-                    qr_opcode: demi_opcode_t::DEMI_OPC_POP,
-                    qr_qd: qd.into(),
-                    qr_qt: qt,
-                    qr_value,
-                }
-            },
-            Err(e) => {
-                warn!("Operation Failed: {:?}", e);
-                demi_qresult_t {
-                    qr_opcode: demi_opcode_t::DEMI_OPC_FAILED,
-                    qr_qd: qd.into(),
-                    qr_qt: qt,
-                    qr_value: unsafe { mem::zeroed() },
-                }
-            },
-        },*/
+                    demi_qresult_t {
+                        qr_opcode: demi_opcode_t::DEMI_OPC_POP,
+                        qr_qd: qd.into(),
+                        qr_qt: qt,
+                        qr_value,
+                    }
+                },
+            }
+        },
         OperationResult::Failed(e) => {
             warn!("Operation Failed: {:?}", e);
             demi_qresult_t {
