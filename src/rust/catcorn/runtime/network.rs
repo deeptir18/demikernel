@@ -9,7 +9,10 @@ use super::Mlx5Runtime;
 use crate::{
     inetstack::protocols::ethernet2::MIN_PAYLOAD_SIZE,
     runtime::{
-        libmlx5::mlx5_bindings::custom_mlx5_gather_rx,
+        libmlx5::mlx5_bindings::{
+            custom_mlx5_gather_rx,
+            custom_mlx5_refcnt_set,
+        },
         memory::Buffer,
         network::{
             consts::RECEIVE_BATCH_SIZE,
@@ -34,6 +37,7 @@ use crate::timer;
 /// Network Runtime Trait Implementation for DPDK Runtime
 impl NetworkRuntime for Mlx5Runtime {
     fn transmit(&self, buf: Box<dyn PacketBuf>) {
+        debug!("Reaching transmit function.");
         // 1: allocate a tx mbuf for potentially the packet header and the object header
         let header_buf_option = match self.mm.alloc_tx_buffer() {
             Ok(buf_option) => buf_option,
@@ -48,9 +52,10 @@ impl NetworkRuntime for Mlx5Runtime {
 
         // write the header into the given buffer
         let header_size = buf.header_size();
+        header_buf.incr_len(header_size);
+        header_buf.incr_len(header_size);
         assert!(header_size <= max_len);
         buf.write_header(header_buf.mut_slice(0, header_size).unwrap());
-        header_buf.incr_len(header_size);
 
         if let Some(inner_buf) = buf.take_body() {
             match inner_buf {
@@ -69,11 +74,11 @@ impl NetworkRuntime for Mlx5Runtime {
             // no body, just header
             if header_size < MIN_PAYLOAD_SIZE {
                 let padding_bytes = MIN_PAYLOAD_SIZE - header_size;
+                header_buf.incr_len(padding_bytes);
                 let padding_buf = header_buf.mut_slice(header_size, padding_bytes).unwrap();
                 for byte in padding_buf {
                     *byte = 0;
                 }
-                header_buf.incr_len(padding_bytes);
             }
 
             // turn into metadata and post single metadata
@@ -103,6 +108,15 @@ impl NetworkRuntime for Mlx5Runtime {
                 let mempool = unsafe { access!(recv_mbuf_info, mempool) };
                 let index = unsafe { access!(recv_mbuf_info, ref_count_index) };
                 let pkt_len = unsafe { access!(recv_mbuf_info, pkt_len) };
+                unsafe {
+                    custom_mlx5_refcnt_set(mempool, index, 1);
+                }
+                debug!(
+                    "Received in rx burst and processing: {}, pkt_len = {}, index = {}",
+                    i, pkt_len, index
+                );
+
+                // set the reference count of this metadata to be 1
                 let datapath_metadata = datapath_metadata_t {
                     buffer: buffer_addr,
                     offset: 0,

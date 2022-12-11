@@ -40,6 +40,7 @@ impl Config {
                 arp_table.insert(ipv4_addr, link_addr);
             }
         }
+        debug!("Arp table: {:?}", arp_table);
         arp_table
     }
 

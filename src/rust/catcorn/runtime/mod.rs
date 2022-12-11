@@ -288,7 +288,7 @@ impl Mlx5Runtime {
         let tx_mempool_params: MempoolAllocationParams =
             MempoolAllocationParams::new(TX_MEMPOOL_MIN_NUM_ITEMS, TX_MEMPOOL_DATA_PGSIZE, TX_MEMPOOL_DATA_LEN)?;
         let global_context_rc = Rc::new(mlx5_global_context);
-        let memory_manager = MemoryManager::new(&global_context_rc, 1, rx_mempool_ptrs[0], &tx_mempool_params)?;
+        let memory_manager = MemoryManager::new(&global_context_rc, 0, rx_mempool_ptrs[0], &tx_mempool_params)?;
 
         let arp_options = ArpConfig::new(
             Some(Duration::from_secs(15)),
@@ -357,7 +357,7 @@ impl Mlx5Runtime {
         let mut curr_available_wqes: usize = unsafe {
             custom_mlx5_num_wqes_available(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _)) as usize
         };
-        while num_wqes_needed < curr_available_wqes {
+        while num_wqes_needed > curr_available_wqes {
             // because we don't support batching yet, just poll for completions
             self.poll_for_completions();
             curr_available_wqes = unsafe {
@@ -483,11 +483,12 @@ impl Mlx5Runtime {
 
     /// Sends a "single metadata" request (header segment only).
     fn transmit_header_only_segment(&self, header_segment: datapath_metadata_t) {
+        debug!("Transmit header only segment");
         let inline_len = 0;
         let num_segs = 1;
         let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs);
         self.spin_on_available_wqes(num_wqes);
-        // TODO: poll for completions while num_wqes is not available
+        debug!("Finished spinning");
         let ctrl_seg = self.start_dma_request(
             num_octowords,
             num_wqes,
@@ -504,6 +505,7 @@ impl Mlx5Runtime {
         self.finish_dma_request(num_wqes);
         self.ring_doorbell(ctrl_seg);
         self.poll_for_completions();
+        debug!("done with transmit");
     }
 
     /// Sends the given metadata (and rings doorbell).

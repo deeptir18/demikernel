@@ -122,9 +122,7 @@ impl Deref for Buffer {
                 unimplemented!();
             },
             #[cfg(feature = "libmlx5")]
-            Buffer::MetadataObj(_metadata) => {
-                unimplemented!();
-            },
+            Buffer::MetadataObj(metadata) => metadata.as_ref(),
         }
     }
 }

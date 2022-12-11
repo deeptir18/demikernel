@@ -87,6 +87,7 @@ impl Mempool {
             true => 1,
             false => 0,
         };
+        debug!("Initializing tx mempool with queue_id {}", queue_id);
         let mempool_ptr = Box::<[u8]>::into_raw(mempool_box);
         if unsafe {
             custom_mlx5_alloc_and_register_tx_pool(

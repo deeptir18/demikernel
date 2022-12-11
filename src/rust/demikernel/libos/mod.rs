@@ -44,6 +44,8 @@ use std::{
 
 #[cfg(feature = "catcollar-libos")]
 use crate::catcollar::CatcollarLibOS;
+#[cfg(feature = "catcorn-libos")]
+use crate::catcorn::CatcornLibOS;
 #[cfg(feature = "catnap-libos")]
 use crate::catnap::CatnapLibOS;
 #[cfg(feature = "catnip-libos")]
@@ -94,6 +96,10 @@ impl LibOS {
             LibOSName::Catpowder => Self::NetworkLibOS(NetworkLibOS::Catpowder(CatpowderLibOS::new(&config))),
             #[cfg(feature = "catnip-libos")]
             LibOSName::Catnip => Self::NetworkLibOS(NetworkLibOS::Catnip(CatnipLibOS::new(&config))),
+            #[cfg(feature = "catcorn-libos")]
+            LibOSName::Catcorn => Self::NetworkLibOS(NetworkLibOS::Catcorn(
+                CatcornLibOS::new(&config).expect("Failed to init catcorn libos"),
+            )),
             _ => panic!("unsupported libos"),
         };
 

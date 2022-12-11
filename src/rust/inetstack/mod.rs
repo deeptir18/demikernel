@@ -47,13 +47,13 @@ use crate::{
         SchedulerHandle,
     },
 };
-use ::libc::{
+use libc::{
     c_int,
     EBADF,
     EINVAL,
     ENOTSUP,
 };
-use ::std::{
+use std::{
     any::Any,
     convert::TryFrom,
     net::{
@@ -597,12 +597,15 @@ impl InetStack {
         if self.local_link_addr != header.dst_addr() && !header.dst_addr().is_broadcast() {
             // ToDo: Add support for is_multicast() to MacAddress type.  Then remove following trace and restore return.
             trace!("Need to add && !header.dst_addr().is_multicast()");
-            //return Err(Fail::new(EINVAL, "physical destination address mismatch"));
+            return Err(Fail::new(EINVAL, "physical destination address mismatch"));
         }
         match header.ether_type() {
             EtherType2::Arp => self.arp.receive(payload),
             EtherType2::Ipv4 => self.ipv4.receive(payload),
-            EtherType2::Ipv6 => Ok(()), // Ignore for now.
+            EtherType2::Ipv6 => {
+                debug!("Receiving Ipv6 packet and doing nothing");
+                Ok(())
+            }, // Ignore for now.
         }
     }
 

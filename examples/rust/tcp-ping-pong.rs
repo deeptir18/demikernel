@@ -33,6 +33,7 @@ use demikernel::{
     QDesc,
     QToken,
 };
+use log::*;
 
 use byteorder::{
     BigEndian,
@@ -164,6 +165,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                 Ok(qt) => qt,
                 Err(e) => panic!("accept failed: {:?}", e.cause),
             };
+            debug!("Called accept");
             nr_pending += 1;
             qtokens.push(qt);
         }
@@ -172,6 +174,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
         // so do we need to pop a vec of received packets, or is it ok to deserialize packet by packet?
         let (i, qr) = libos.wait_any(&qtokens).unwrap();
         qtokens.remove(i);
+        debug!("Got some qtoken from wait any");
 
         // Parse the result.
         match qr.qr_opcode {
@@ -183,10 +186,12 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                     Err(e) => panic!("pop failed: {:?}", e.cause),
                 };
                 nr_pending -= 1;
+                debug!("Accepted something");
                 qtokens.push(qt);
             },
             // Pop completed.
             demi_opcode_t::DEMI_OPC_POP => {
+                debug!("Popped something");
                 match mode {
                     // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
                     ModeCodeT::ModeCf => {
