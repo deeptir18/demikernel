@@ -57,6 +57,7 @@ use crate::runtime::{
         MLX5_ETH_WQE_L3_CSUM,
         MLX5_ETH_WQE_L4_CSUM,
     },
+    memory::CornflakesObj,
     network::{
         config::{
             ArpConfig,
@@ -366,12 +367,99 @@ impl Mlx5Runtime {
         return;
     }
 
+    fn transmit_header_and_cornflakes_obj(&self, mut header_buffer: datapath_buffer_t, cornflakes_obj: CornflakesObj) {
+        // wait till number of segments are available
+        let inline_len = 0;
+        let num_segs_required = cornflakes_obj.num_segments_total(true);
+        let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs_required);
+        self.spin_on_available_wqes(num_wqes);
+
+        // write header into header buffer
+        let mut_header_slice = header_buffer
+            .mut_slice(header_buffer.len(), header_buffer.max_len() - header_buffer.len())
+            .unwrap();
+        let written = cornflakes_obj.write_header(mut_header_slice);
+        header_buffer.incr_len(written);
+        let header_segment = header_buffer.to_metadata(0, header_buffer.len());
+
+        // start transmission
+        let ctrl_seg = self.start_dma_request(
+            num_octowords,
+            num_wqes,
+            inline_len,
+            num_segs_required,
+            MLX5_ETH_WQE_L3_CSUM as i32 | MLX5_ETH_WQE_L4_CSUM as i32,
+        );
+
+        let mut dpseg =
+            unsafe { custom_mlx5_dpseg_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _), 0) };
+        let mut completion = unsafe {
+            custom_mlx5_completion_start(self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _))
+        };
+        let (curr_dpseg, curr_completion) = self.post_pcie_request(header_segment, dpseg, completion);
+        dpseg = curr_dpseg;
+        completion = curr_completion;
+
+        // define a callback to post on the ring buffer, and call it with the object iterator
+        let mut ring_buffer_state = (dpseg, completion);
+        let thread_context_ptr = self.mlx5_global_context.get_thread_context_ptr(self.queue_id as _);
+        let mut callback = |metadata: datapath_metadata_t,
+                            ring_buffer_state: &mut (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info)|
+         -> Result<(), Fail> {
+            // increment reference count on underlying metadata
+            unsafe {
+                match metadata.recovery_info {
+                    datapath_recovery_info_t { ofed_recovery_info } => {
+                        custom_mlx5_refcnt_update_or_free(
+                            ofed_recovery_info.mempool as _,
+                            metadata.buffer,
+                            ofed_recovery_info.index as _,
+                            -1i8,
+                        );
+                        debug!(
+                            "{}",
+                            format!(
+                                "Posting buffer: len = {}, off = {}, buf addr = {:?}",
+                                metadata.data_len(),
+                                metadata.offset(),
+                                metadata.buffer
+                            )
+                        );
+                        let curr_dpseg = custom_mlx5_add_dpseg(
+                            thread_context_ptr,
+                            ring_buffer_state.0,
+                            metadata.buffer,
+                            ofed_recovery_info.mempool as *mut registered_mempool,
+                            metadata.offset() as _,
+                            metadata.data_len() as _,
+                        );
+                        let curr_completion = custom_mlx5_add_completion_info(
+                            thread_context_ptr,
+                            ring_buffer_state.1,
+                            metadata.buffer,
+                            ofed_recovery_info.mempool as *mut registered_mempool,
+                        );
+                        ring_buffer_state.0 = curr_dpseg;
+                        ring_buffer_state.1 = curr_completion;
+                    },
+                }
+            }
+            Ok(())
+        };
+
+        cornflakes_obj.iterate_over_entries_with_callback(&mut callback, &mut ring_buffer_state);
+
+        // finish transmission and poll for completions
+        self.finish_dma_request(num_wqes);
+        self.ring_doorbell(ctrl_seg);
+        self.poll_for_completions();
+    }
+
     fn transmit_header_and_data_segment(&self, header_segment: datapath_metadata_t, data_segment: datapath_metadata_t) {
         let inline_len = 0;
         let num_segs = 2;
         let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs);
         self.spin_on_available_wqes(num_wqes);
-        // TODO: poll for completions while num_wqes is not available
         let ctrl_seg = self.start_dma_request(
             num_octowords,
             num_wqes,

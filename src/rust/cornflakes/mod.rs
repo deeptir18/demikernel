@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation
 // Licensed under the MIT license.
 pub mod generated_objects;
 
@@ -22,6 +22,7 @@ use generated_objects::{
     SingleBufferCF,
 };
 use std::{
+    io::Write,
     ops::Index,
     slice::Iter,
 };
@@ -47,6 +48,60 @@ impl ObjEnum {
         match self {
             ObjEnum::Single(single) => single.total_length(copy_context),
             ObjEnum::List(list) => list.total_length(copy_context),
+        }
+    }
+
+    pub fn num_segments_total(
+        &self,
+        with_header: bool,
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+    ) -> usize {
+        match self {
+            ObjEnum::Single(single) => single.num_segments_total(with_header, copy_context, ref_offset, ref_length),
+            ObjEnum::List(list) => list.num_segments_total(with_header, copy_context, ref_offset, ref_length),
+        }
+    }
+
+    pub fn write_header(
+        &self,
+        header_buffer: &mut [u8],
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+    ) -> usize {
+        match self {
+            ObjEnum::Single(single) => single.write_header(header_buffer, copy_context, ref_offset, ref_length),
+            ObjEnum::List(list) => list.write_header(header_buffer, copy_context, ref_offset, ref_length),
+        }
+    }
+
+    pub fn iterate_over_entries_with_callback<F, C>(
+        &self,
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        match self {
+            ObjEnum::Single(single) => single.iterate_over_entries_with_callback(
+                copy_context,
+                ref_offset,
+                ref_length,
+                datapath_callback,
+                callback_state,
+            ),
+            ObjEnum::List(list) => list.iterate_over_entries_with_callback(
+                copy_context,
+                ref_offset,
+                ref_length,
+                datapath_callback,
+                callback_state,
+            ),
         }
     }
 }
@@ -314,6 +369,24 @@ impl CopyContextRef {
     }
 }
 
+/// Checks whether [seg.0, seg.0 + seg.1) is within [overarching_seg.0, overarching_seg.0 +
+/// overarching_seg.1)
+#[inline]
+pub fn check_bounds(seg_off: usize, seg_len: usize, ref_offset: usize, ref_length: usize) -> bool {
+    seg_off >= ref_offset && (seg_off + seg_len) < (ref_offset + ref_length)
+}
+
+#[inline]
+pub fn sub_segment(seg_off: usize, seg_len: usize, ref_offset: usize, ref_length: usize) -> Option<(usize, usize)> {
+    let start = std::cmp::min(seg_off, ref_offset);
+    let end = std::cmp::max(seg_off + seg_len, ref_offset + ref_length);
+    if start < end {
+        return Some((start, end - start));
+    } else {
+        return None;
+    }
+}
+
 pub trait HybridSgaHdr {
     const CONSTANT_HEADER_SIZE: usize = SIZE_FIELD + OFFSET_FIELD;
     const NUMBER_OF_FIELDS: usize = 1;
@@ -323,6 +396,152 @@ pub trait HybridSgaHdr {
     fn new_in() -> Self
     where
         Self: Sized;
+
+    /// Calculates number of non contiguous segments represented by this object,
+    /// within the length bounds of [ref_offset, ref_offset + ref_length)
+    fn num_segments_total(
+        &self,
+        with_header: bool,
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+    ) -> usize {
+        let mut ret = 0;
+        let mut data_offset_so_far = 0;
+        let total_header_size = self.total_header_size(false);
+        if with_header {
+            if check_bounds(0, total_header_size, ref_offset, ref_length) {
+                ret += 1;
+            }
+        }
+        data_offset_so_far += total_header_size;
+
+        for metadata in copy_context.iter() {
+            if metadata.data_len() == 0 {
+                continue;
+            }
+            if check_bounds(data_offset_so_far, metadata.data_len(), ref_offset, ref_length) {
+                ret += 1;
+            }
+            data_offset_so_far += metadata.data_len();
+        }
+
+        ret += self.num_zero_copy_segments_total(ref_offset, ref_length, data_offset_so_far);
+        return ret;
+    }
+
+    fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize;
+
+    fn write_header(
+        &self,
+        header_buffer: &mut [u8],
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+    ) -> usize {
+        // if the header buffer is not completely within [ref_offset, ref_offset +
+        // ref_length), allocate a new buffer to write the header
+        let total_header_size = self.total_header_size(false);
+        let copy_context_len: usize = copy_context.iter().map(|seg| seg.data_len()).sum();
+
+        if let Some(subseg) = sub_segment(0, total_header_size, ref_offset, ref_length) {
+            let mut zc_off = 0;
+            if subseg.0 != 0 || subseg.1 != total_header_size {
+                let mut tmp_hdr_buf = vec![0u8; total_header_size];
+                self.write_header_inner(
+                    tmp_hdr_buf.as_mut_slice(),
+                    total_header_size,
+                    copy_context_len,
+                    0,
+                    self.dynamic_header_start(),
+                    &mut zc_off,
+                );
+
+                // copy from tmp hdr buf to header buffer
+                header_buffer[0..subseg.1].copy_from_slice(&tmp_hdr_buf.as_slice()[subseg.0..(subseg.0 + subseg.1)]);
+                return subseg.1;
+            } else {
+                self.write_header_inner(
+                    header_buffer,
+                    total_header_size,
+                    copy_context_len,
+                    0,
+                    self.dynamic_header_start(),
+                    &mut zc_off,
+                );
+                return total_header_size;
+            }
+        } else {
+            // don't need to write anything
+            return 0;
+        }
+    }
+
+    fn write_header_inner(
+        &self,
+        header_buffer: &mut [u8],
+        header_len: usize,
+        copy_context_len: usize,
+        constant_header_offset: usize,
+        dynamic_header_offset: usize,
+        cur_zero_copy_data_off: &mut usize,
+    );
+
+    fn iterate_over_entries_with_callback<F, C>(
+        &self,
+        copy_context: &Vec<datapath_metadata_t>,
+        ref_offset: usize,
+        ref_length: usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        let header_len = self.total_header_size(false);
+        let mut copy_context_len = 0;
+        let mut cur_zero_copy_data_off = 0;
+        for metadata in copy_context.iter() {
+            if metadata.data_len() == 0 {
+                continue;
+            }
+
+            if let Some(subseg) = sub_segment(
+                header_len + copy_context_len,
+                metadata.data_len(),
+                ref_offset,
+                ref_length,
+            ) {
+                // subset the copy context and post it
+                let mut new_metadata = metadata.clone();
+                let new_offset = metadata.offset() + (subseg.0 - (header_len + copy_context.len()));
+                let new_len = subseg.1;
+                new_metadata.set_data_len_and_offset(new_len, new_offset).unwrap();
+                datapath_callback(new_metadata, callback_state).unwrap();
+            }
+            copy_context_len += metadata.data_len();
+        }
+        self.iterate_over_entries_inner(
+            header_len,
+            copy_context_len,
+            &mut cur_zero_copy_data_off,
+            datapath_callback,
+            callback_state,
+            ref_offset,
+            ref_length,
+        )
+    }
+
+    fn iterate_over_entries_inner<F, C>(
+        &self,
+        header_len: usize,
+        copy_context_len: usize,
+        cur_zero_copy_data_off: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+        ref_offset: usize,
+        ref_length: usize,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>;
 
     fn num_zero_copy_scatter_gather_entries(&self) -> usize;
 
@@ -420,23 +639,6 @@ pub trait HybridSgaHdr {
     }
 
     fn zero_copy_data_len(&self) -> usize;
-
-    fn iterate_over_entries<F, C>(
-        &self,
-        _copy_context: &mut CopyContext,
-        _header_len: usize,
-        _header_buffer: &mut [u8],
-        _constant_header_offset: usize,
-        _dynamic_header_offset: usize,
-        _cur_entry_ptr: &mut usize,
-        _datapath_callback: &mut F,
-        _callback_state: &mut C,
-    ) -> Result<usize, Fail>
-    where
-        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
-    {
-        unimplemented!();
-    }
 
     fn inner_serialize(
         &self,
@@ -615,47 +817,78 @@ impl HybridSgaHdr for CFBytes {
     }
 
     #[inline]
-    fn iterate_over_entries<F, C>(
-        &self,
-        _copy_context: &mut CopyContext,
-        header_len: usize,
-        header_buffer: &mut [u8],
-        constant_header_offset: usize,
-        _dynamic_header_offset: usize,
-        cur_entry_ptr: &mut usize,
-        datapath_callback: &mut F,
-        callback_state: &mut C,
-    ) -> Result<usize, Fail>
-    where
-        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
-    {
+    fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize {
         match self {
             CFBytes::RefCounted(metadata) => {
-                // call the datapath callback on this metadata
-                datapath_callback(&metadata, callback_state)?;
-                let offset_to_write = *cur_entry_ptr;
+                // if segment is in bounds, return
+                if check_bounds(data_offset_so_far, metadata.data_len(), ref_offset, ref_length) {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            },
+            _ => {
+                return 0;
+            },
+        }
+    }
+
+    #[inline]
+    fn write_header_inner(
+        &self,
+        header_buffer: &mut [u8],
+        header_len: usize,
+        copy_context_len: usize,
+        constant_header_offset: usize,
+        _dynamic_header_offset: usize,
+        cur_zero_copy_data_off: &mut usize,
+    ) {
+        match self {
+            CFBytes::RefCounted(metadata) => {
+                let offset_to_write = *cur_zero_copy_data_off + header_len + copy_context_len;
                 let object_len = metadata.as_ref().len();
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(object_len as u32);
                 obj_ref.write_offset(offset_to_write as u32);
-                *cur_entry_ptr += object_len;
-                Ok(object_len)
+                *cur_zero_copy_data_off += object_len;
             },
             CFBytes::Copied(copy_context_ref) => {
-                //copy_context.check(&copy_context_ref)?;
-                // write in the offset and length into the correct location in the header buffer
                 let offset_to_write = copy_context_ref.total_offset() + header_len;
                 let mut obj_ref = MutForwardPointer(header_buffer, constant_header_offset);
                 obj_ref.write_size(copy_context_ref.len() as u32);
                 obj_ref.write_offset(offset_to_write as u32);
-                // debug!(
-                //     offset_to_write = offset_to_write,
-                //     size = copy_context_ref.len(),
-                //     copy_context_total_offset = copy_context_ref.total_offset(),
-                //     header_buffer_len = header_buffer.len(),
-                //     "Reached inner serialize for cf bytes"
-                // );
-                Ok(copy_context_ref.len())
+            },
+        }
+    }
+
+    #[inline]
+    fn iterate_over_entries_inner<F, C>(
+        &self,
+        header_len: usize,
+        copy_context_len: usize,
+        cur_zero_copy_data_off: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+        ref_offset: usize,
+        ref_length: usize,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        match self {
+            CFBytes::RefCounted(metadata) => {
+                let seg_off = header_len + copy_context_len + *cur_zero_copy_data_off;
+                let seg_len = metadata.data_len();
+                if let Some(subseg) = sub_segment(seg_off, seg_len, ref_offset, ref_length) {
+                    let diff = subseg.0 - *cur_zero_copy_data_off;
+                    let new_offset = metadata.offset() + diff;
+                    let mut new_metadata = metadata.clone();
+                    new_metadata.set_data_len_and_offset(subseg.1, new_offset).unwrap();
+                    datapath_callback(new_metadata, callback_state).unwrap();
+                }
+                *cur_zero_copy_data_off += seg_len;
+            },
+            CFBytes::Copied(_copy_context_ref) => {
+                // no need to do anything here
             },
         }
     }
@@ -872,35 +1105,36 @@ where
     }
 
     #[inline]
-    fn iterate_over_entries<F, C>(
+    fn num_zero_copy_segments_total(
         &self,
-        copy_context: &mut CopyContext,
-        header_len: usize,
+        ref_offset: usize,
+        ref_length: usize,
+        mut data_offset_so_far: usize,
+    ) -> usize {
+        let mut ret = 0;
+        for elt in self.elts.iter().take(self.num_set) {
+            ret += elt.num_zero_copy_segments_total(ref_offset, ref_length, data_offset_so_far);
+            data_offset_so_far += elt.zero_copy_data_len();
+        }
+        return ret;
+    }
+
+    #[inline]
+    fn write_header_inner(
+        &self,
         header_buffer: &mut [u8],
+        header_len: usize,
+        copy_context_len: usize,
         constant_header_offset: usize,
         dynamic_header_offset: usize,
-        cur_entry_ptr: &mut usize,
-        datapath_callback: &mut F,
-        callback_state: &mut C,
-    ) -> Result<usize, Fail>
-    where
-        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
-    {
+        cur_zero_copy_data_off: &mut usize,
+    ) {
         {
             let mut forward_pointer = MutForwardPointer(header_buffer, constant_header_offset);
             forward_pointer.write_size(self.num_set as u32);
             forward_pointer.write_offset(dynamic_header_offset as u32);
         }
 
-        // tracing::debug!(
-        //     num_set = self.num_set,
-        //     dynamic_offset = dynamic_header_offset,
-        //     num_set = self.num_set,
-        //     "Writing in forward pointer at position {}",
-        //     constant_header_offset
-        // );
-
-        let mut ret = 0;
         let mut cur_dynamic_off = dynamic_header_offset + self.dynamic_header_start();
         for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {
             if elt.dynamic_header_size() != 0 {
@@ -909,35 +1143,52 @@ where
                 // TODO: might be unnecessary
                 forward_offset.write_size(elt.dynamic_header_size() as u32);
                 forward_offset.write_offset(cur_dynamic_off as u32);
-                ret += elt.iterate_over_entries(
-                    copy_context,
-                    header_len,
+                elt.write_header_inner(
                     header_buffer,
+                    header_len,
+                    copy_context_len,
                     cur_dynamic_off,
                     cur_dynamic_off + elt.dynamic_header_start(),
-                    cur_entry_ptr,
-                    datapath_callback,
-                    callback_state,
-                )?;
+                    cur_zero_copy_data_off,
+                );
             } else {
-                // tracing::debug!(
-                //     constant = dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
-                //     "Calling inner serialize recursively in list inner serialize"
-                // );
-                ret += elt.iterate_over_entries(
-                    copy_context,
-                    header_len,
+                elt.write_header_inner(
                     header_buffer,
+                    header_len,
+                    copy_context_len,
                     dynamic_header_offset + T::CONSTANT_HEADER_SIZE * i,
                     cur_dynamic_off,
-                    cur_entry_ptr,
-                    datapath_callback,
-                    callback_state,
-                )?;
+                    cur_zero_copy_data_off,
+                );
             }
             cur_dynamic_off += elt.dynamic_header_size();
         }
-        Ok(ret)
+    }
+
+    #[inline]
+    fn iterate_over_entries_inner<F, C>(
+        &self,
+        header_len: usize,
+        copy_context_len: usize,
+        cur_zero_copy_data_off: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+        ref_offset: usize,
+        ref_length: usize,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        for elt in self.elts.iter().take(self.num_set) {
+            elt.iterate_over_entries_inner(
+                header_len,
+                copy_context_len,
+                cur_zero_copy_data_off,
+                datapath_callback,
+                callback_state,
+                ref_offset,
+                ref_length,
+            );
+        }
     }
 
     #[inline]
@@ -955,7 +1206,6 @@ where
             forward_pointer.write_size(self.num_set as u32);
             forward_pointer.write_offset(dynamic_header_start as u32);
         }
-
         let mut sge_idx = 0;
         let mut cur_dynamic_off = dynamic_header_start + self.dynamic_header_start();
         for (i, elt) in self.elts.iter().take(self.num_set).enumerate() {

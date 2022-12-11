@@ -274,6 +274,12 @@ impl LibOS {
         }
     }
 
+    pub fn push_slice(&mut self, sockqd: QDesc, slice: &[u8]) -> Result<QToken, Fail> {
+        match self {
+            LibOS::NetworkLibOS(libos) => libos.push_slice(sockqd, slice),
+        }
+    }
+
     pub fn push_metadata(&mut self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
         match self {
             LibOS::NetworkLibOS(libos) => libos.push_metadata(sockqd, metadata),

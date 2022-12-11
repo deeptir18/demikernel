@@ -10,7 +10,10 @@ use crate::{
         CopyContext,
         ObjEnum,
     },
-    runtime::types::datapath_metadata_t,
+    runtime::{
+        fail::Fail,
+        types::datapath_metadata_t,
+    },
 };
 //==============================================================================
 // Structures
@@ -18,12 +21,10 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct CornflakesObj {
-    full_header_size: usize,
     copy_context: Vec<datapath_metadata_t>,
     obj: ObjEnum,
     start_offset: usize,
     reference_len: usize,
-    total_data_len: usize,
 }
 
 //==============================================================================
@@ -31,24 +32,17 @@ pub struct CornflakesObj {
 //==============================================================================
 impl CornflakesObj {
     pub fn new(object: ObjEnum, copy_context: CopyContext) -> Self {
-        let header_size = object.total_header_size();
         let total_data_len = object.total_length(&copy_context);
         CornflakesObj {
-            full_header_size: header_size,
             obj: object,
             copy_context: copy_context.to_metadata_vec(),
             start_offset: 0,
             reference_len: total_data_len,
-            total_data_len,
         }
     }
 
-    pub fn obj(&self) -> &ObjEnum {
-        &self.obj
-    }
-
     pub fn len(&self) -> usize {
-        self.reference_len;
+        self.reference_len
     }
 
     pub fn trim(&mut self, nbytes: usize) {
@@ -60,11 +54,30 @@ impl CornflakesObj {
         self.reference_len -= nbytes;
     }
 
-    pub fn full_header_size(&self) -> usize {
-        self.full_header_size
+    pub fn num_segments_total(&self, with_header: bool) -> usize {
+        self.obj
+            .num_segments_total(with_header, &self.copy_context, self.start_offset, self.reference_len)
     }
 
-    pub fn copy_context_iter(&self) -> std::slice::Iter<datapath_metadata_t> {
-        self.copy_context.iter()
+    pub fn write_header(&self, mut_header_slice: &mut [u8]) -> usize {
+        self.obj.write_header(
+            mut_header_slice,
+            &self.copy_context,
+            self.start_offset,
+            self.reference_len,
+        )
+    }
+
+    pub fn iterate_over_entries_with_callback<F, C>(&self, callback: &mut F, callback_state: &mut C)
+    where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        self.obj.iterate_over_entries_with_callback(
+            &self.copy_context,
+            self.start_offset,
+            self.reference_len,
+            callback,
+            callback_state,
+        );
     }
 }

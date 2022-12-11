@@ -155,40 +155,67 @@ impl HybridSgaHdr for SingleBufferCF {
     }
 
     #[inline]
-    fn iterate_over_entries<F, C>(
+    fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize {
+        let mut ret = 0;
+        if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
+            ret += self
+                .message
+                .num_zero_copy_segments_total(ref_offset, ref_length, data_offset_so_far);
+        }
+        return ret;
+    }
+
+    #[inline]
+    fn write_header_inner(
         &self,
-        copy_context: &mut CopyContext,
-        header_len: usize,
         header_buffer: &mut [u8],
+        header_len: usize,
+        copy_context_len: usize,
         constant_header_offset: usize,
         dynamic_header_offset: usize,
-        cur_entry_ptr: &mut usize,
-        datapath_callback: &mut F,
-        callback_state: &mut C,
-    ) -> Result<usize, Fail>
-    where
-        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
-    {
+        cur_zero_copy_data_off: &mut usize,
+    ) {
         self.serialize_bitmap(header_buffer, constant_header_offset);
         let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_offset;
-        let mut ret = 0;
 
         if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
-            ret += self.message.iterate_over_entries(
-                copy_context,
-                header_len,
+            self.message.write_header_inner(
                 header_buffer,
+                header_len,
+                copy_context_len,
                 cur_constant_offset,
                 cur_dynamic_offset,
-                cur_entry_ptr,
+                cur_zero_copy_data_off,
+            );
+        }
+    }
+
+    #[inline]
+    fn iterate_over_entries_inner<F, C>(
+        &self,
+        header_len: usize,
+        copy_context_len: usize,
+        cur_zero_copy_data_off: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+        ref_offset: usize,
+        ref_length: usize,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
+            self.message.iterate_over_entries_inner(
+                header_len,
+                copy_context_len,
+                cur_zero_copy_data_off,
                 datapath_callback,
                 callback_state,
-            )?;
+                ref_offset,
+                ref_length,
+            );
         }
-
-        Ok(ret)
     }
 
     #[inline]
@@ -369,40 +396,67 @@ impl HybridSgaHdr for ListCF {
     }
 
     #[inline]
-    fn iterate_over_entries<F, C>(
+    fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize {
+        let mut ret = 0;
+        if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
+            ret += self
+                .messages
+                .num_zero_copy_segments_total(ref_offset, ref_length, data_offset_so_far);
+        }
+        return ret;
+    }
+
+    #[inline]
+    fn write_header_inner(
         &self,
-        copy_context: &mut CopyContext,
-        header_len: usize,
         header_buffer: &mut [u8],
+        header_len: usize,
+        copy_context_len: usize,
         constant_header_offset: usize,
         dynamic_header_offset: usize,
-        cur_entry_ptr: &mut usize,
-        datapath_callback: &mut F,
-        callback_state: &mut C,
-    ) -> Result<usize, Fail>
-    where
-        F: FnMut(&datapath_metadata_t, &mut C) -> Result<(), Fail>,
-    {
+        cur_zero_copy_data_off: &mut usize,
+    ) {
         self.serialize_bitmap(header_buffer, constant_header_offset);
         let cur_constant_offset = constant_header_offset + BITMAP_LENGTH_FIELD + Self::bitmap_length();
 
         let cur_dynamic_offset = dynamic_header_offset;
-        let mut ret = 0;
 
         if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
-            ret += self.messages.iterate_over_entries(
-                copy_context,
-                header_len,
+            self.messages.write_header_inner(
                 header_buffer,
+                header_len,
+                copy_context_len,
                 cur_constant_offset,
                 cur_dynamic_offset,
-                cur_entry_ptr,
+                cur_zero_copy_data_off,
+            );
+        }
+    }
+
+    #[inline]
+    fn iterate_over_entries_inner<F, C>(
+        &self,
+        header_len: usize,
+        copy_context_len: usize,
+        cur_zero_copy_data_off: &mut usize,
+        datapath_callback: &mut F,
+        callback_state: &mut C,
+        ref_offset: usize,
+        ref_length: usize,
+    ) where
+        F: FnMut(datapath_metadata_t, &mut C) -> Result<(), Fail>,
+    {
+        if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
+            self.messages.iterate_over_entries_inner(
+                header_len,
+                copy_context_len,
+                cur_zero_copy_data_off,
                 datapath_callback,
                 callback_state,
-            )?;
+                ref_offset,
+                ref_length,
+            );
         }
-
-        Ok(ret)
     }
 
     #[inline]

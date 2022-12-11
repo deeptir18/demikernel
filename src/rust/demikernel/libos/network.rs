@@ -448,6 +448,17 @@ impl NetworkLibOS {
         }
     }
 
+    pub fn push_slice(&mut self, sockqd: QDesc, slice: &[u8]) -> Result<QToken, Fail> {
+        match self {
+            #[cfg(feature = "catcorn-libos")]
+            NetworkLibOS::Catcorn(libos) => libos.push_slice(sockqd, slice),
+            _ => {
+                warn!("push slice only implemented for catcorn.");
+                unimplemented!();
+            },
+        }
+    }
+
     pub fn push_metadata(&mut self, sockqd: QDesc, metadata: datapath_metadata_t) -> Result<QToken, Fail> {
         match self {
             #[cfg(feature = "catcorn-libos")]

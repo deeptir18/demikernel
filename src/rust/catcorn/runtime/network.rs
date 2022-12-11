@@ -58,8 +58,8 @@ impl NetworkRuntime for Mlx5Runtime {
                     warn!("Transmit buffer is heap allocated");
                     unimplemented!();
                 },
-                Buffer::CornflakesObj(_obj_enum) => {
-                    warn!("Trying to send cornflakes obj - not implemented yet");
+                Buffer::CornflakesObj(obj_enum) => {
+                    self.transmit_header_and_cornflakes_obj(header_buf, obj_enum);
                 },
                 Buffer::MetadataObj(data_buf) => {
                     self.transmit_header_and_data_segment(header_buf.to_metadata(0, header_size), data_buf);

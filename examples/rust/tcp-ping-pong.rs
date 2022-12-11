@@ -128,7 +128,7 @@ fn read_message_type(packet: &datapath_metadata_t) -> Result<SimpleMessageType> 
 //======================================================================================================================
 // server()
 //======================================================================================================================
-fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
+fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> {
     let libos_name: LibOSName = match LibOSName::from_env() {
         Ok(libos_name) => libos_name.into(),
         Err(e) => panic!("{:?}", e),
@@ -137,6 +137,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
         Ok(libos) => libos,
         Err(e) => panic!("failed to initialize libos: {:?}", e.cause),
     };
+    libos.set_copying_threshold(threshold);
     // Setup peer.
     let sockqd: QDesc = match libos.socket(AF_INET, SOCK_STREAM, 0) {
         Ok(qd) => qd,
@@ -251,10 +252,6 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
                         qtokens.push(qt);
-                        // match libos.drop_metadata(pkt) {
-                        //     Ok(_) => {},
-                        //     Err(e) => panic!("failed to release scatter-gather array: {:?}", e),
-                        // }
                     },
                     // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
                     ModeCodeT::ModeFb => {
@@ -293,10 +290,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT) -> Result<()> {
                             },
                         }
 
-                        // TODO: pkt.buffer should be set to  &self.builder.finished_data()
-                        // in order to get flatbuffer message in.
-                        // Have to see the finalized APIs to do this
-                        let qt: QToken = match libos.push_metadata(qd, pkt) {
+                        let qt: QToken = match libos.push_slice(qd, &builder.finished_data()) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
@@ -430,29 +424,34 @@ fn usage(program_name: &String) {
 // main()
 //======================================================================================================================
 
-fn convert(mode_name: String) -> ModeCodeT {
-    if mode_name.contains("cf_0c") || mode_name.contains("cf_1c") {
-        return ModeCodeT::ModeCf;
+fn convert(mode_name: String) -> (ModeCodeT, usize) {
+    if mode_name.contains("cf_0c") {
+        return (ModeCodeT::ModeCf, 0);
+    } else if mode_name.contains("cf_1c") {
+        return (ModeCodeT::ModeCf, std::usize::MAX);
     } else if mode_name.contains("flatbuffer") {
-        return ModeCodeT::ModeFb;
+        return (ModeCodeT::ModeFb, std::usize::MAX);
     }
-    return ModeCodeT::ModeNone;
+    return (ModeCodeT::ModeNone, std::usize::MAX);
 }
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     let mut mode: ModeCodeT = ModeCodeT::ModeNone;
+    let mut threshold = 0;
     if args.len() >= 5 {
         if args[3] == "--packet_type" {
-            mode = convert(args[4].to_string());
+            let (cur_mode, cur_threshold) = convert(args[4].to_string());
+            mode = cur_mode;
+            threshold = cur_threshold;
         }
     }
 
     if args.len() >= 3 {
         let sockaddr: SocketAddrV4 = SocketAddrV4::from_str(&args[2])?;
         if args[1] == "--server" {
-            let ret: Result<()> = server(sockaddr, mode);
+            let ret: Result<()> = server(sockaddr, mode, threshold);
             return ret;
         } else if args[1] == "--client" {
             let ret: Result<()> = client(sockaddr);

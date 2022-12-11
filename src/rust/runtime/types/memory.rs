@@ -12,7 +12,6 @@ use libc::{
     c_void,
     sockaddr,
 };
-use std::io::Write;
 //==============================================================================
 // Constants
 //==============================================================================
@@ -271,8 +270,8 @@ impl Drop for datapath_buffer_t {
     }
 }
 
-impl datapath_buffer_t {
-    pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+impl std::io::Write for datapath_buffer_t {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let bytes_to_write = bytes.len();
         let buf_addr = (self.buffer as usize + self.data_len) as *mut u8;
         let mut buf = unsafe { std::slice::from_raw_parts_mut(buf_addr, bytes_to_write) };
@@ -281,10 +280,12 @@ impl datapath_buffer_t {
         Ok(bytes.len())
     }
 
-    pub fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
 
+impl datapath_buffer_t {
     pub fn mut_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8], Fail> {
         if len <= self.data_len {
             unsafe {
@@ -302,6 +303,10 @@ impl datapath_buffer_t {
                 ),
             ));
         }
+    }
+
+    pub fn max_len(&self) -> usize {
+        self.max_len
     }
 
     pub fn incr_len(&mut self, len: usize) {

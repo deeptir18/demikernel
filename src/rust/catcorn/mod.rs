@@ -46,6 +46,7 @@ use crate::{
 };
 use std::{
     ffi::CStr,
+    io::Write,
     net::SocketAddrV4,
     ops::{
         Deref,
@@ -274,9 +275,32 @@ impl CatcornLibOS {
         cornflakes_obj: ObjEnum,
     ) -> Result<QToken, Fail> {
         #[cfg(feature = "profiler")]
-        timer!("catcorn::push");
+        timer!("catcorn::push_cornflakes_obj");
         trace!("push(): qd={:?}", qd);
         let buffer_obj = Buffer::CornflakesObj(CornflakesObj::new(cornflakes_obj, copy_context));
+        let future = self.do_push(qd, buffer_obj)?;
+        let handle: SchedulerHandle = match self.scheduler.insert(future) {
+            Some(handle) => handle,
+            None => return Err(Fail::new(libc::EAGAIN, "cannot schedule co-routine")),
+        };
+        let qt: QToken = handle.into_raw().into();
+        Ok(qt)
+    }
+
+    pub fn push_slice(&mut self, qd: QDesc, slice: &[u8]) -> Result<QToken, Fail> {
+        #[cfg(feature = "profiler")]
+        timer!("catcorn::push_slice");
+        trace!("push(): qd={:?}", qd);
+        let metadata = match self.allocate_tx_buffer()? {
+            Some((mut b, _)) => {
+                b.write(slice)?;
+                b.to_metadata(0, slice.len())
+            },
+            None => {
+                return Err(Fail::new(libc::EAGAIN, "Could not allocate tx buffer to write slice"));
+            },
+        };
+        let buffer_obj = Buffer::MetadataObj(metadata);
         let future = self.do_push(qd, buffer_obj)?;
         let handle: SchedulerHandle = match self.scheduler.insert(future) {
             Some(handle) => handle,
