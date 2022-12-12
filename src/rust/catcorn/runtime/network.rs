@@ -53,7 +53,6 @@ impl NetworkRuntime for Mlx5Runtime {
         // write the header into the given buffer
         let header_size = buf.header_size();
         header_buf.incr_len(header_size);
-        header_buf.incr_len(header_size);
         assert!(header_size <= max_len);
         buf.write_header(header_buf.mut_slice(0, header_size).unwrap());
 

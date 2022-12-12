@@ -440,7 +440,7 @@ impl Mlx5Runtime {
                             ofed_recovery_info.mempool as _,
                             metadata.buffer,
                             ofed_recovery_info.index as _,
-                            -1i8,
+                            1i8,
                         );
                         debug!(
                             "{}",
@@ -551,7 +551,7 @@ impl Mlx5Runtime {
                         ofed_recovery_info.mempool as _,
                         metadata.buffer,
                         ofed_recovery_info.index as _,
-                        -1i8,
+                        1i8,
                     );
                     debug!(
                         "{}",

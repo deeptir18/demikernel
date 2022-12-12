@@ -135,7 +135,7 @@ fn read_message_type(packet: &datapath_metadata_t) -> Result<SimpleMessageType> 
             Ok(SimpleMessageType::List(size as _))
         },
         (x, y) => {
-            warn!("Received framing type: [{}, {}]", x, y);
+            warn!("Received framing type: [{}, {}]; pkt len: {}", x, y, buf.len());
             unimplemented!();
         },
     }
@@ -280,6 +280,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                         let mut builder: flatbuffers::FlatBufferBuilder = flatbuffers::FlatBufferBuilder::new();
                         match message_type {
                             SimpleMessageType::Single => {
+                                debug!("Pkt length: {:?}", pkt.as_ref().len());
                                 let object_deser =
                                     root::<SingleBufferFB>(&pkt.as_ref()[(REQ_TYPE_SIZE + CLIENT_FRAMING)..])?;
                                 let args = SingleBufferFBArgs {
