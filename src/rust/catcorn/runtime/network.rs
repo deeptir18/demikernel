@@ -63,14 +63,15 @@ impl NetworkRuntime for Mlx5Runtime {
                     warn!("Transmit buffer is heap allocated");
                     unimplemented!();
                 },
-                Buffer::CornflakesObj(obj_enum) => {
-                    self.transmit_header_and_cornflakes_obj(header_buf, obj_enum);
-                },
                 Buffer::MetadataObj(data_buf) => {
                     self.transmit_header_and_data_segment(header_buf.to_metadata(0, header_size), data_buf);
                 },
+                Buffer::CornflakesObj(obj_enum) => {
+                    self.transmit_header_and_cornflakes_obj(header_buf, obj_enum);
+                },
             }
         } else {
+            debug!("Transmiting header only segment");
             // no body, just header
             if header_size < MIN_PAYLOAD_SIZE {
                 let padding_bytes = MIN_PAYLOAD_SIZE - header_size;

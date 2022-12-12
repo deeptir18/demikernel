@@ -158,6 +158,7 @@ impl HybridSgaHdr for SingleBufferCF {
     fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize {
         let mut ret = 0;
         if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
+            debug!("Message field is there");
             ret += self
                 .message
                 .num_zero_copy_segments_total(ref_offset, ref_length, data_offset_so_far);
@@ -195,6 +196,7 @@ impl HybridSgaHdr for SingleBufferCF {
     #[inline]
     fn iterate_over_entries_inner<F, C>(
         &self,
+        data_offset: usize,
         header_len: usize,
         copy_context_len: usize,
         cur_zero_copy_data_off: &mut usize,
@@ -207,6 +209,7 @@ impl HybridSgaHdr for SingleBufferCF {
     {
         if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
             self.message.iterate_over_entries_inner(
+                data_offset,
                 header_len,
                 copy_context_len,
                 cur_zero_copy_data_off,
@@ -257,11 +260,15 @@ impl HybridSgaHdr for SingleBufferCF {
         buffer_offset: usize,
     ) -> Result<(), Fail> {
         let bitmap_size = self.deserialize_bitmap(buf, header_offset, buffer_offset);
+        debug!("Decoded bitmap size: {}", bitmap_size);
         let cur_constant_offset = header_offset + BITMAP_LENGTH_FIELD + bitmap_size;
 
         if self.get_bitmap_field(Self::MESSAGE_BITMAP_IDX, Self::MESSAGE_BITMAP_OFFSET) {
+            debug!("Bitmap message there");
             self.message
                 .inner_deserialize(buf, cur_constant_offset, buffer_offset)?;
+        } else {
+            debug!("Bitmap message not there");
         }
 
         Ok(())
@@ -436,6 +443,7 @@ impl HybridSgaHdr for ListCF {
     #[inline]
     fn iterate_over_entries_inner<F, C>(
         &self,
+        data_offset: usize,
         header_len: usize,
         copy_context_len: usize,
         cur_zero_copy_data_off: &mut usize,
@@ -448,6 +456,7 @@ impl HybridSgaHdr for ListCF {
     {
         if self.get_bitmap_field(Self::MESSAGES_BITMAP_IDX, Self::MESSAGES_BITMAP_OFFSET) {
             self.messages.iterate_over_entries_inner(
+                data_offset,
                 header_len,
                 copy_context_len,
                 cur_zero_copy_data_off,

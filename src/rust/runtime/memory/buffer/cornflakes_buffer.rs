@@ -25,20 +25,37 @@ pub struct CornflakesObj {
     obj: ObjEnum,
     start_offset: usize,
     reference_len: usize,
+    pkt_timestamp: u64,
+    flow_id: u64,
 }
 
 //==============================================================================
 // Associate Functions
 //==============================================================================
 impl CornflakesObj {
-    pub fn new(object: ObjEnum, copy_context: CopyContext) -> Self {
+    pub fn new(object: ObjEnum, copy_context: CopyContext, timestamp: u64, flow_id: u64) -> Self {
         let total_data_len = object.total_length(&copy_context);
+        debug!("Calculated object size as {}", total_data_len);
         CornflakesObj {
             obj: object,
             copy_context: copy_context.to_metadata_vec(),
             start_offset: 0,
-            reference_len: total_data_len,
+            reference_len: total_data_len + 32,
+            pkt_timestamp: timestamp,
+            flow_id,
         }
+    }
+
+    pub fn offset(&self) -> usize {
+        self.start_offset
+    }
+
+    pub fn get_timestamp(&self) -> u64 {
+        self.pkt_timestamp
+    }
+
+    pub fn get_flow_id(&self) -> u64 {
+        self.flow_id
     }
 
     pub fn len(&self) -> usize {
@@ -55,8 +72,13 @@ impl CornflakesObj {
     }
 
     pub fn num_segments_total(&self, with_header: bool) -> usize {
-        self.obj
-            .num_segments_total(with_header, &self.copy_context, self.start_offset, self.reference_len)
+        self.obj.num_segments_total(
+            with_header,
+            &self.copy_context,
+            self.start_offset,
+            self.reference_len,
+            32,
+        )
     }
 
     pub fn write_header(&self, mut_header_slice: &mut [u8]) -> usize {
@@ -65,6 +87,7 @@ impl CornflakesObj {
             &self.copy_context,
             self.start_offset,
             self.reference_len,
+            32,
         )
     }
 
@@ -76,6 +99,7 @@ impl CornflakesObj {
             &self.copy_context,
             self.start_offset,
             self.reference_len,
+            32,
             callback,
             callback_state,
         );

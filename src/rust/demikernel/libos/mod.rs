@@ -274,15 +274,25 @@ impl LibOS {
         sockqd: QDesc,
         copy_context: CopyContext,
         cornflakes_obj: ObjEnum,
+        pkt_timestamp: u64,
+        flow_id: u64,
     ) -> Result<QToken, Fail> {
         match self {
-            LibOS::NetworkLibOS(libos) => libos.push_cornflakes_obj(sockqd, copy_context, cornflakes_obj),
+            LibOS::NetworkLibOS(libos) => {
+                libos.push_cornflakes_obj(sockqd, copy_context, cornflakes_obj, pkt_timestamp, flow_id)
+            },
         }
     }
 
-    pub fn push_slice(&mut self, sockqd: QDesc, slice: &[u8]) -> Result<QToken, Fail> {
+    pub fn push_slice(
+        &mut self,
+        sockqd: QDesc,
+        slice: &[u8],
+        pkt_timestamp: u64,
+        flow_id: u64,
+    ) -> Result<QToken, Fail> {
         match self {
-            LibOS::NetworkLibOS(libos) => libos.push_slice(sockqd, slice),
+            LibOS::NetworkLibOS(libos) => libos.push_slice(sockqd, slice, pkt_timestamp, flow_id),
         }
     }
 

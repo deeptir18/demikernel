@@ -38,10 +38,10 @@ use log::*;
 use byteorder::{
     BigEndian,
     ByteOrder,
+    LittleEndian,
 };
 use std::{
     env,
-    mem::ManuallyDrop,
     net::SocketAddrV4,
     panic,
     slice,
@@ -80,6 +80,7 @@ pub enum ModeCodeT {
 const BUFFER_SIZE: usize = 64;
 const FILL_CHAR: u8 = 0x65;
 pub const REQ_TYPE_SIZE: usize = 4;
+pub const CLIENT_FRAMING: usize = 32;
 
 //======================================================================================================================
 // mksga()
@@ -112,15 +113,29 @@ pub enum SimpleMessageType {
     List(usize),
 }
 
+fn read_timestamp_and_flow_id(packet: &datapath_metadata_t) -> (u64, u64) {
+    let buf = packet.as_ref();
+    let timestamp = &buf[0..8];
+    let flow_id = &buf[8..16];
+    return (LittleEndian::read_u64(timestamp), LittleEndian::read_u64(flow_id));
+}
 fn read_message_type(packet: &datapath_metadata_t) -> Result<SimpleMessageType> {
     let buf = &packet.as_ref();
-    let msg_type = &buf[0..2];
-    let size = &buf[2..4];
+    let msg_type = &buf[CLIENT_FRAMING..(CLIENT_FRAMING + 2)];
+    let size = &buf[(CLIENT_FRAMING + 2)..(CLIENT_FRAMING + 4)];
+    debug!("Msg type buf: {:?}, size buf: {:?}", msg_type, size);
 
     match (BigEndian::read_u16(msg_type), BigEndian::read_u16(size)) {
-        (0, 0) => Ok(SimpleMessageType::Single),
-        (1, size) => Ok(SimpleMessageType::List(size as _)),
-        (_, _) => {
+        (0, 0) => {
+            debug!("Read message type single");
+            Ok(SimpleMessageType::Single)
+        },
+        (1, size) => {
+            debug!("Read message type list with size {}", size);
+            Ok(SimpleMessageType::List(size as _))
+        },
+        (x, y) => {
+            warn!("Received framing type: [{}, {}]", x, y);
             unimplemented!();
         },
     }
@@ -192,23 +207,23 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
             // Pop completed.
             demi_opcode_t::DEMI_OPC_POP => {
                 debug!("Popped something");
+                let qd: QDesc = qr.qr_qd.into();
+                let pkt_wrapper: std::mem::ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
+                let pkt = std::mem::ManuallyDrop::<datapath_metadata_t>::into_inner(pkt_wrapper);
                 match mode {
                     // :::::::::::HANDLING CORNFLAKES ZERO COPY PACKETS::::::::::::::
                     ModeCodeT::ModeCf => {
-                        let qd: QDesc = qr.qr_qd.into();
-                        let pkt_wrapper: std::mem::ManuallyDrop<datapath_metadata_t> =
-                            unsafe { qr.qr_value.qr_metadata };
-                        let pkt = std::mem::ManuallyDrop::<datapath_metadata_t>::into_inner(pkt_wrapper);
                         // Deserialize.
-                        let mut copy_context = CopyContext::new(&mut libos)?;
                         let message_type = read_message_type(&pkt)?;
+                        let (timestamp, flow_id) = read_timestamp_and_flow_id(&pkt);
+                        let mut copy_context = CopyContext::new(&mut libos)?;
 
                         match message_type {
                             SimpleMessageType::Single => {
                                 let mut single_deser = SingleBufferCF::new_in();
                                 let mut single_ser = SingleBufferCF::new_in();
                                 {
-                                    single_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                                    single_deser.deserialize(&pkt, REQ_TYPE_SIZE + CLIENT_FRAMING)?;
                                 }
                                 {
                                     single_ser.set_message(CFBytes::new(
@@ -219,16 +234,19 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                                 }
                                 let obj_enum = ObjEnum::Single(single_ser);
                                 // Push data.
-                                let qt: QToken = match libos.push_cornflakes_obj(qd, copy_context, obj_enum) {
-                                    Ok(qt) => qt,
-                                    Err(e) => panic!("failed to push CF object: {:?}", e),
-                                };
+                                let qt: QToken =
+                                    match libos.push_cornflakes_obj(qd, copy_context, obj_enum, timestamp, flow_id) {
+                                        Ok(qt) => qt,
+                                        Err(e) => panic!("failed to push CF object: {:?}", e),
+                                    };
                                 qtokens.push(qt);
                             },
                             SimpleMessageType::List(_size) => {
+                                let message_type = read_message_type(&pkt)?;
+                                let (timestamp, flow_id) = read_timestamp_and_flow_id(&pkt);
                                 let mut list_deser = ListCF::new_in();
                                 let mut list_ser = ListCF::new_in();
-                                list_deser.deserialize(&pkt, REQ_TYPE_SIZE)?;
+                                list_deser.deserialize(&pkt, REQ_TYPE_SIZE + CLIENT_FRAMING)?;
 
                                 list_ser.init_messages(list_deser.get_messages().len());
                                 let messages = list_ser.get_mut_messages();
@@ -237,20 +255,17 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                                 }
                                 let obj_enum = ObjEnum::List(list_ser);
                                 // Push data.
-                                let qt: QToken = match libos.push_cornflakes_obj(qd, copy_context, obj_enum) {
-                                    Ok(qt) => qt,
-                                    Err(e) => panic!("failed to push CF object: {:?}", e),
-                                };
+                                let qt: QToken =
+                                    match libos.push_cornflakes_obj(qd, copy_context, obj_enum, timestamp, flow_id) {
+                                        Ok(qt) => qt,
+                                        Err(e) => panic!("failed to push CF object: {:?}", e),
+                                    };
                                 qtokens.push(qt);
                             },
                         }
                     },
                     // :::::::::::::::::::::::HANDLING NORMAL PACKETS:::::::::::::::::::
                     ModeCodeT::ModeNone => {
-                        let qd: QDesc = qr.qr_qd.into();
-                        let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
-                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);
-
                         // Push data.
                         let qt: QToken = match libos.push_metadata(qd, pkt) {
                             Ok(qt) => qt,
@@ -260,14 +275,13 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                     },
                     // ::::::::::::::::::::::: HANDLING FLATBUFFERS :::::::::::::::::::::
                     ModeCodeT::ModeFb => {
-                        let qd: QDesc = qr.qr_qd.into();
-                        let wrapper: ManuallyDrop<datapath_metadata_t> = unsafe { qr.qr_value.qr_metadata };
-                        let pkt: datapath_metadata_t = ManuallyDrop::<datapath_metadata_t>::into_inner(wrapper);
+                        let message_type = read_message_type(&pkt)?;
+                        let (timestamp, flow_id) = read_timestamp_and_flow_id(&pkt);
                         let mut builder: flatbuffers::FlatBufferBuilder = flatbuffers::FlatBufferBuilder::new();
-                        let msg_type = read_message_type(&pkt)?;
-                        match msg_type {
+                        match message_type {
                             SimpleMessageType::Single => {
-                                let object_deser = root::<SingleBufferFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let object_deser =
+                                    root::<SingleBufferFB>(&pkt.as_ref()[(REQ_TYPE_SIZE + CLIENT_FRAMING)..])?;
                                 let args = SingleBufferFBArgs {
                                     message: Some(builder.create_vector_direct::<u8>(object_deser.message().unwrap())),
                                 };
@@ -275,7 +289,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                                 builder.finish(single_buffer_fb, None);
                             },
                             SimpleMessageType::List(size) => {
-                                let object_deser = root::<ListFB>(&pkt.as_ref()[REQ_TYPE_SIZE..])?;
+                                let object_deser = root::<ListFB>(&pkt.as_ref()[(REQ_TYPE_SIZE + CLIENT_FRAMING)..])?;
                                 let args_vec: Vec<SingleBufferFBArgs> = (0..size)
                                     .map(|idx| SingleBufferFBArgs {
                                         message: Some(builder.create_vector_direct::<u8>(
@@ -295,7 +309,7 @@ fn server(local: SocketAddrV4, mode: ModeCodeT, threshold: usize) -> Result<()> 
                             },
                         }
 
-                        let qt: QToken = match libos.push_slice(qd, &builder.finished_data()) {
+                        let qt: QToken = match libos.push_slice(qd, &builder.finished_data(), timestamp, flow_id) {
                             Ok(qt) => qt,
                             Err(e) => panic!("push failed: {:?}", e.cause),
                         };
@@ -431,10 +445,11 @@ fn usage(program_name: &String) {
 
 fn convert(mode_name: String) -> (ModeCodeT, usize) {
     if mode_name.contains("cf_0c") {
+        debug!("Setting threshold to {}", 0);
         return (ModeCodeT::ModeCf, 0);
     } else if mode_name.contains("cf_1c") {
         return (ModeCodeT::ModeCf, std::usize::MAX);
-    } else if mode_name.contains("flatbuffer") {
+    } else if mode_name.contains("fb") {
         return (ModeCodeT::ModeFb, std::usize::MAX);
     }
     return (ModeCodeT::ModeNone, std::usize::MAX);

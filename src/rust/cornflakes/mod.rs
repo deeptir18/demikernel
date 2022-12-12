@@ -57,10 +57,15 @@ impl ObjEnum {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
     ) -> usize {
         match self {
-            ObjEnum::Single(single) => single.num_segments_total(with_header, copy_context, ref_offset, ref_length),
-            ObjEnum::List(list) => list.num_segments_total(with_header, copy_context, ref_offset, ref_length),
+            ObjEnum::Single(single) => {
+                single.num_segments_total(with_header, copy_context, ref_offset, ref_length, data_offset)
+            },
+            ObjEnum::List(list) => {
+                list.num_segments_total(with_header, copy_context, ref_offset, ref_length, data_offset)
+            },
         }
     }
 
@@ -70,10 +75,13 @@ impl ObjEnum {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
     ) -> usize {
         match self {
-            ObjEnum::Single(single) => single.write_header(header_buffer, copy_context, ref_offset, ref_length),
-            ObjEnum::List(list) => list.write_header(header_buffer, copy_context, ref_offset, ref_length),
+            ObjEnum::Single(single) => {
+                single.write_header(header_buffer, copy_context, ref_offset, ref_length, data_offset)
+            },
+            ObjEnum::List(list) => list.write_header(header_buffer, copy_context, ref_offset, ref_length, data_offset),
         }
     }
 
@@ -82,6 +90,7 @@ impl ObjEnum {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
         datapath_callback: &mut F,
         callback_state: &mut C,
     ) where
@@ -92,6 +101,7 @@ impl ObjEnum {
                 copy_context,
                 ref_offset,
                 ref_length,
+                data_offset,
                 datapath_callback,
                 callback_state,
             ),
@@ -99,6 +109,7 @@ impl ObjEnum {
                 copy_context,
                 ref_offset,
                 ref_length,
+                data_offset,
                 datapath_callback,
                 callback_state,
             ),
@@ -194,6 +205,11 @@ impl SerializationCopyBuf {
     #[inline]
     pub fn to_metadata(&self) -> datapath_metadata_t {
         let len = self.len();
+        debug!(
+            "metadata buf: {:?}, written so far: {}\n",
+            self.buf.buffer,
+            self.buf.len()
+        );
         self.buf.to_metadata(0, len)
     }
 
@@ -373,13 +389,20 @@ impl CopyContextRef {
 /// overarching_seg.1)
 #[inline]
 pub fn check_bounds(seg_off: usize, seg_len: usize, ref_offset: usize, ref_length: usize) -> bool {
-    seg_off >= ref_offset && (seg_off + seg_len) < (ref_offset + ref_length)
+    debug!(
+        "Checking bounds: [{}, {}] in [{}, {}]?",
+        seg_off,
+        seg_off + seg_len,
+        ref_offset,
+        ref_offset + ref_length
+    );
+    seg_off >= ref_offset && (seg_off + seg_len) <= (ref_offset + ref_length)
 }
 
 #[inline]
 pub fn sub_segment(seg_off: usize, seg_len: usize, ref_offset: usize, ref_length: usize) -> Option<(usize, usize)> {
-    let start = std::cmp::min(seg_off, ref_offset);
-    let end = std::cmp::max(seg_off + seg_len, ref_offset + ref_length);
+    let start = std::cmp::max(seg_off, ref_offset);
+    let end = std::cmp::min(seg_off + seg_len, ref_offset + ref_length);
     if start < end {
         return Some((start, end - start));
     } else {
@@ -405,12 +428,14 @@ pub trait HybridSgaHdr {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
     ) -> usize {
         let mut ret = 0;
-        let mut data_offset_so_far = 0;
+        let mut data_offset_so_far = data_offset;
         let total_header_size = self.total_header_size(false);
         if with_header {
-            if check_bounds(0, total_header_size, ref_offset, ref_length) {
+            if check_bounds(data_offset_so_far, total_header_size, ref_offset, ref_length) {
+                debug!("Adding 1 segment for header");
                 ret += 1;
             }
         }
@@ -421,6 +446,7 @@ pub trait HybridSgaHdr {
                 continue;
             }
             if check_bounds(data_offset_so_far, metadata.data_len(), ref_offset, ref_length) {
+                debug!("Adding one segment for copy context");
                 ret += 1;
             }
             data_offset_so_far += metadata.data_len();
@@ -438,15 +464,21 @@ pub trait HybridSgaHdr {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
     ) -> usize {
         // if the header buffer is not completely within [ref_offset, ref_offset +
         // ref_length), allocate a new buffer to write the header
         let total_header_size = self.total_header_size(false);
         let copy_context_len: usize = copy_context.iter().map(|seg| seg.data_len()).sum();
+        debug!(
+            "Total header size: {}, copy context len: {}, ref_length: {}, ref_offset: {}",
+            total_header_size, copy_context_len, ref_length, ref_offset
+        );
 
-        if let Some(subseg) = sub_segment(0, total_header_size, ref_offset, ref_length) {
+        if let Some(subseg) = sub_segment(data_offset, total_header_size, ref_offset, ref_length) {
+            debug!("Header subseg: {}, {}", subseg.0, subseg.1);
             let mut zc_off = 0;
-            if subseg.0 != 0 || subseg.1 != total_header_size {
+            if subseg.0 != data_offset || subseg.1 != total_header_size {
                 let mut tmp_hdr_buf = vec![0u8; total_header_size];
                 self.write_header_inner(
                     tmp_hdr_buf.as_mut_slice(),
@@ -492,6 +524,7 @@ pub trait HybridSgaHdr {
         copy_context: &Vec<datapath_metadata_t>,
         ref_offset: usize,
         ref_length: usize,
+        data_offset: usize,
         datapath_callback: &mut F,
         callback_state: &mut C,
     ) where
@@ -506,14 +539,21 @@ pub trait HybridSgaHdr {
             }
 
             if let Some(subseg) = sub_segment(
-                header_len + copy_context_len,
+                data_offset + header_len + copy_context_len,
                 metadata.data_len(),
                 ref_offset,
                 ref_length,
             ) {
                 // subset the copy context and post it
+                debug!(
+                    "Old off: {}, subseg start: {}, og start: {}",
+                    metadata.offset(),
+                    subseg.0,
+                    data_offset + header_len + copy_context_len
+                );
+
                 let mut new_metadata = metadata.clone();
-                let new_offset = metadata.offset() + (subseg.0 - (header_len + copy_context.len()));
+                let new_offset = metadata.offset() + (subseg.0 - (data_offset + header_len + copy_context_len));
                 let new_len = subseg.1;
                 new_metadata.set_data_len_and_offset(new_len, new_offset).unwrap();
                 datapath_callback(new_metadata, callback_state).unwrap();
@@ -521,6 +561,7 @@ pub trait HybridSgaHdr {
             copy_context_len += metadata.data_len();
         }
         self.iterate_over_entries_inner(
+            data_offset,
             header_len,
             copy_context_len,
             &mut cur_zero_copy_data_off,
@@ -533,6 +574,7 @@ pub trait HybridSgaHdr {
 
     fn iterate_over_entries_inner<F, C>(
         &self,
+        data_offset: usize,
         header_len: usize,
         copy_context_len: usize,
         cur_zero_copy_data_off: &mut usize,
@@ -593,6 +635,12 @@ pub trait HybridSgaHdr {
     /// in the serialized header format takes.
     fn deserialize_bitmap(&mut self, pkt: &datapath_metadata_t, offset: usize, buffer_offset: usize) -> usize {
         let header = pkt.as_ref();
+        debug!(
+            "Reading bitmap size from {} to {}: {:?}",
+            buffer_offset + offset,
+            buffer_offset + offset + BITMAP_LENGTH_FIELD,
+            &header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)]
+        );
         let bitmap_size =
             LittleEndian::read_u32(&header[(buffer_offset + offset)..(buffer_offset + offset + BITMAP_LENGTH_FIELD)]);
         self.set_bitmap(
@@ -697,6 +745,8 @@ pub trait HybridSgaHdr {
         offset: usize,
         // arena: &'arena bumpalo::Bump,
     ) -> Result<(), Fail> {
+        debug!("Deserializing pkt with data_len {}, off {}", pkt.data_len(), offset);
+        debug!("Deserializing bytes: {:?}", &pkt.as_ref()[offset..offset + 32]);
         // Right now, for deserialize we assume one contiguous buffer
         // let metadata = pkt.seg(0);
         self.inner_deserialize(pkt, 0, offset)?;
@@ -763,11 +813,15 @@ impl CFBytes {
             let copy_context_ref = copy_context
                 .copy(ptr, libos)
                 .expect("Could not copy buffers during CFBytes creation");
+            debug!("Copied cf bytes");
             return CFBytes::Copied(copy_context_ref);
         };
 
         match libos.recover_metadata(ptr).expect("Could not recover metadata") {
-            Some(m) => CFBytes::RefCounted(m),
+            Some(m) => {
+                debug!("Recovered m: {:?} off {} len {}", m.buffer, m.offset(), m.data_len());
+                CFBytes::RefCounted(m)
+            },
             None => CFBytes::Copied(
                 copy_context
                     .copy(ptr, libos)
@@ -820,8 +874,15 @@ impl HybridSgaHdr for CFBytes {
     fn num_zero_copy_segments_total(&self, ref_offset: usize, ref_length: usize, data_offset_so_far: usize) -> usize {
         match self {
             CFBytes::RefCounted(metadata) => {
-                // if segment is in bounds, return
+                debug!(
+                    "Data off so far: {}. seg len: {}. ref off: {}, ref len: {}",
+                    data_offset_so_far,
+                    metadata.data_len(),
+                    ref_offset,
+                    ref_length
+                );
                 if check_bounds(data_offset_so_far, metadata.data_len(), ref_offset, ref_length) {
+                    debug!("Adding one field for bytes field");
                     return 1;
                 } else {
                     return 0;
@@ -864,6 +925,7 @@ impl HybridSgaHdr for CFBytes {
     #[inline]
     fn iterate_over_entries_inner<F, C>(
         &self,
+        data_offset: usize,
         header_len: usize,
         copy_context_len: usize,
         cur_zero_copy_data_off: &mut usize,
@@ -876,12 +938,34 @@ impl HybridSgaHdr for CFBytes {
     {
         match self {
             CFBytes::RefCounted(metadata) => {
-                let seg_off = header_len + copy_context_len + *cur_zero_copy_data_off;
+                debug!(
+                    "Metadata buf addr: {:?}, off: {}, len: {}",
+                    metadata.buffer,
+                    metadata.offset(),
+                    metadata.data_len()
+                );
+                debug!("Cur zero copy data off: {}", *cur_zero_copy_data_off);
+                let seg_off = data_offset + header_len + copy_context_len + *cur_zero_copy_data_off;
                 let seg_len = metadata.data_len();
+                debug!(
+                    "Data off so far: {}. seg len: {}. ref off: {}, ref len: {}",
+                    seg_off,
+                    metadata.data_len(),
+                    ref_offset,
+                    ref_length
+                );
                 if let Some(subseg) = sub_segment(seg_off, seg_len, ref_offset, ref_length) {
-                    let diff = subseg.0 - *cur_zero_copy_data_off;
+                    debug!("Posting sub segment of thingy: {} {}", subseg.0, subseg.0 + subseg.1);
+                    let diff = subseg.0 - seg_off;
                     let new_offset = metadata.offset() + diff;
                     let mut new_metadata = metadata.clone();
+                    debug!(
+                        "Calculated diff as {}, old off: {}, new off: {}, new len: {}",
+                        diff,
+                        metadata.offset(),
+                        new_offset,
+                        subseg.1
+                    );
                     new_metadata.set_data_len_and_offset(subseg.1, new_offset).unwrap();
                     datapath_callback(new_metadata, callback_state).unwrap();
                 }
@@ -935,10 +1019,23 @@ impl HybridSgaHdr for CFBytes {
         let mut new_metadata = buf.clone();
         let forward_pointer = ForwardPointer(buf.as_ref(), header_offset + buffer_offset);
         let original_offset = buf.offset();
+        debug!(
+            "Read forward pointer: ADDR {:?}. size {}, offset {}, original off: {}, buffer off: {}",
+            buf.buffer,
+            forward_pointer.get_size(),
+            forward_pointer.get_offset(),
+            original_offset,
+            buffer_offset,
+        );
         new_metadata.set_data_len_and_offset(
             forward_pointer.get_size() as usize,
             forward_pointer.get_offset() as usize + original_offset + buffer_offset,
         )?;
+        debug!(
+            "New off and length: len {} off {}",
+            new_metadata.data_len(),
+            new_metadata.offset()
+        );
         *self = CFBytes::RefCounted(new_metadata);
         Ok(())
     }
@@ -1168,6 +1265,7 @@ where
     #[inline]
     fn iterate_over_entries_inner<F, C>(
         &self,
+        data_offset: usize,
         header_len: usize,
         copy_context_len: usize,
         cur_zero_copy_data_off: &mut usize,
@@ -1180,6 +1278,7 @@ where
     {
         for elt in self.elts.iter().take(self.num_set) {
             elt.iterate_over_entries_inner(
+                data_offset,
                 header_len,
                 copy_context_len,
                 cur_zero_copy_data_off,

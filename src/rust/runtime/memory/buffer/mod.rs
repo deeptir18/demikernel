@@ -116,6 +116,7 @@ impl Deref for Buffer {
             Buffer::DPDK(mbuf) => mbuf.deref(),
             #[cfg(feature = "libmlx5")]
             Buffer::CornflakesObj(_cornflakes_obj) => {
+                debug!("Reaching here");
                 // TODO: I don't believe its reasonable to expect buffer objects to implement this
                 // function, because it assumes that scatter-gather arrays will be split as
                 // separate packets, which will add a bunch of overhead.

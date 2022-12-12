@@ -134,6 +134,7 @@ impl Mempool {
         if pgsize != PGSIZE_2MB {
             return vec![];
         }
+        debug!("Returning 2mb pages");
         let num_pages = unsafe { access!(data_pool, num_pages, usize) };
         let mempool_start = unsafe { access!(data_pool, buf, usize) };
         (0..num_pages)
@@ -200,7 +201,7 @@ impl Mempool {
         let mempool = self.mempool();
         let data_pool = self.data_mempool();
         let mempool_start = access!(data_pool, buf, usize);
-        let item_len = access!(data_pool, buf, usize);
+        let item_len = access!(data_pool, item_len, usize);
         let offset_within_alloc = ptr.as_ptr() as usize - mempool_start;
         let index = (offset_within_alloc & !(item_len - 1)) >> access!(data_pool, log_item_len, usize);
         let data_ptr = mempool_start + (index << access!(data_pool, log_item_len, usize));
@@ -304,7 +305,9 @@ impl MemoryManager {
     }
 
     pub fn recover_metadata(&self, ptr: &[u8]) -> Result<Option<datapath_metadata_t>, Fail> {
+        debug!("Calling recover with ptr: {:?}", ptr.as_ptr());
         if let Some(id) = self.find_mempool_id(ptr) {
+            debug!("Mempool id: {}, rx id: {}", id, RX_MEMPOOL_ID);
             let mempool = self.mempools.get(&id).unwrap();
             unsafe {
                 return Ok(Some(mempool.recover_metadata_mbuf(ptr)));

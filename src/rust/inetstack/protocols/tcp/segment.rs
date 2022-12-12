@@ -14,13 +14,13 @@ use crate::{
         network::PacketBuf,
     },
 };
-use ::byteorder::{
+use byteorder::{
     ByteOrder,
     NetworkEndian,
     ReadBytesExt,
 };
-use ::libc::EBADMSG;
-use ::std::{
+use libc::EBADMSG;
+use std::{
     convert::TryInto,
     io::Cursor,
 };
@@ -44,7 +44,10 @@ impl PacketBuf for TcpSegment {
 
     fn body_size(&self) -> usize {
         match &self.data {
-            Some(buf) => buf.len(),
+            Some(buf) => {
+                debug!("Calling buf.len() for budy size");
+                buf.len()
+            },
             None => 0,
         }
     }
@@ -64,16 +67,22 @@ impl PacketBuf for TcpSegment {
             .serialize(&mut buf[cur_pos..(cur_pos + ipv4_hdr_size)], ipv4_payload_len);
         cur_pos += ipv4_hdr_size;
 
-        let payload: &[u8] = match &self.data {
-            Some(buf) => &buf[..],
-            None => &[],
-        };
-        self.tcp_hdr.serialize(
-            &mut buf[cur_pos..(cur_pos + tcp_hdr_size)],
-            &self.ipv4_hdr,
-            payload,
-            self.tx_checksum_offload,
-        );
+        if !self.tx_checksum_offload {
+            debug!("About to deref buf to get data");
+            let payload: &[u8] = match &self.data {
+                Some(buf) => &buf[..],
+                None => &[],
+            };
+            self.tcp_hdr.serialize(
+                &mut buf[cur_pos..(cur_pos + tcp_hdr_size)],
+                &self.ipv4_hdr,
+                payload,
+                self.tx_checksum_offload,
+            );
+        } else {
+            self.tcp_hdr
+                .serialize_no_checksum(&mut buf[cur_pos..(cur_pos + tcp_hdr_size)])
+        }
     }
 
     fn take_body(&self) -> Option<Buffer> {
@@ -360,6 +369,68 @@ impl TcpHeader {
         };
         buf.adjust(data_offset);
         Ok((header, buf))
+    }
+
+    pub fn serialize_no_checksum(&self, buf: &mut [u8]) {
+        let fixed_buf: &mut [u8; MIN_TCP_HEADER_SIZE] = (&mut buf[..MIN_TCP_HEADER_SIZE]).try_into().unwrap();
+        NetworkEndian::write_u16(&mut fixed_buf[0..2], self.src_port.into());
+        NetworkEndian::write_u16(&mut fixed_buf[2..4], self.dst_port.into());
+        NetworkEndian::write_u32(&mut fixed_buf[4..8], self.seq_num.into());
+        NetworkEndian::write_u32(&mut fixed_buf[8..12], self.ack_num.into());
+
+        fixed_buf[12] = ((self.compute_size() / 4) as u8) << 4;
+        if self.ns {
+            fixed_buf[12] |= 1;
+        }
+        fixed_buf[13] = 0;
+        if self.cwr {
+            fixed_buf[13] |= 1 << 7;
+        }
+        if self.ece {
+            fixed_buf[13] |= 1 << 6;
+        }
+        if self.urg {
+            fixed_buf[13] |= 1 << 5;
+        }
+        if self.ack {
+            fixed_buf[13] |= 1 << 4;
+        }
+        if self.psh {
+            fixed_buf[13] |= 1 << 3;
+        }
+        if self.rst {
+            fixed_buf[13] |= 1 << 2;
+        }
+        if self.syn {
+            fixed_buf[13] |= 1 << 1;
+        }
+        if self.fin {
+            fixed_buf[13] |= 1 << 0;
+        }
+
+        NetworkEndian::write_u16(&mut fixed_buf[14..16], self.window_size);
+
+        // Write the checksum (bytes 16..18) later.
+
+        NetworkEndian::write_u16(&mut fixed_buf[18..20], self.urgent_pointer);
+
+        let mut cur_pos = MIN_TCP_HEADER_SIZE;
+        for i in 0..self.num_options {
+            let bytes_written = self.option_list[i].serialize(&mut buf[cur_pos..]);
+            cur_pos += bytes_written;
+        }
+        // Write out an "End of options list" if we had options.
+        if self.num_options > 0 {
+            buf[cur_pos] = 0;
+            cur_pos += 1;
+        }
+        // Zero out the remainder of padding in the header.
+        for byte in &mut buf[cur_pos..] {
+            *byte = 0;
+        }
+
+        // Alright, we've fully filled out the header, time to compute the checksum.
+        NetworkEndian::write_u16(&mut buf[16..18], 0u16);
     }
 
     pub fn serialize(&self, buf: &mut [u8], ipv4_hdr: &Ipv4Header, data: &[u8], tx_checksum_offload: bool) {

@@ -8,6 +8,10 @@
 //==============================================================================
 
 use crate::runtime::fail::Fail;
+use byteorder::{
+    ByteOrder,
+    LittleEndian,
+};
 use libc::{
     c_void,
     sockaddr,
@@ -198,6 +202,15 @@ impl datapath_metadata_t {
         }
     }
 
+    pub fn trim(&mut self, nbytes: usize) {
+        self.offset += nbytes;
+        self.len -= nbytes;
+    }
+
+    pub fn adjust(&mut self, nbytes: usize) {
+        self.len -= nbytes;
+    }
+
     pub fn data_len(&self) -> usize {
         self.len
     }
@@ -286,8 +299,15 @@ impl std::io::Write for datapath_buffer_t {
 }
 
 impl datapath_buffer_t {
+    pub fn write_u64(&mut self, t: u64) {
+        let buf_addr = (self.buffer as usize + self.data_len) as *mut u8;
+        let mut buf = unsafe { std::slice::from_raw_parts_mut(buf_addr, 8) };
+        LittleEndian::write_u64(&mut buf, t);
+        self.data_len += 8;
+    }
+
     pub fn mut_slice(&mut self, start: usize, len: usize) -> Result<&mut [u8], Fail> {
-        if len <= self.data_len {
+        if len <= (self.max_len - start) {
             unsafe {
                 return Ok(std::slice::from_raw_parts_mut(
                     (self.buffer as *mut u8).offset(start as isize),
@@ -333,6 +353,10 @@ impl datapath_buffer_t {
                     datapath_recovery_info_t {
                         ofed_recovery_info: ofed_info,
                     } => {
+                        debug!(
+                            "Updating refcnt by turning buf to metadata for buffer with index {}",
+                            ofed_info.index
+                        );
                         crate::runtime::libmlx5::mlx5_bindings::custom_mlx5_refcnt_update_or_free(
                             ofed_info.mempool as *mut crate::runtime::libmlx5::mlx5_bindings::registered_mempool,
                             self.buffer,

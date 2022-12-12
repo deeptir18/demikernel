@@ -125,6 +125,11 @@ impl CatcornLibOS {
             config.tcp_checksum_offload(),
             config.udp_checksum_offload(),
         )?);
+        debug!(
+            "Config use jumbo: {}, checksum off: {}",
+            config.use_jumbo_frames(),
+            config.tcp_checksum_offload()
+        );
         let now: Instant = Instant::now();
         let clock: TimerRc = TimerRc(Rc::new(Timer::new(now)));
         let scheduler: Scheduler = Scheduler::default();
@@ -273,11 +278,14 @@ impl CatcornLibOS {
         qd: QDesc,
         copy_context: CopyContext,
         cornflakes_obj: ObjEnum,
+        pkt_timestamp: u64,
+        flow_id: u64,
     ) -> Result<QToken, Fail> {
         #[cfg(feature = "profiler")]
         timer!("catcorn::push_cornflakes_obj");
         trace!("push(): qd={:?}", qd);
-        let buffer_obj = Buffer::CornflakesObj(CornflakesObj::new(cornflakes_obj, copy_context));
+        let buffer_obj =
+            Buffer::CornflakesObj(CornflakesObj::new(cornflakes_obj, copy_context, pkt_timestamp, flow_id));
         let future = self.do_push(qd, buffer_obj)?;
         let handle: SchedulerHandle = match self.scheduler.insert(future) {
             Some(handle) => handle,
@@ -287,14 +295,19 @@ impl CatcornLibOS {
         Ok(qt)
     }
 
-    pub fn push_slice(&mut self, qd: QDesc, slice: &[u8]) -> Result<QToken, Fail> {
+    pub fn push_slice(&mut self, qd: QDesc, slice: &[u8], pkt_timestamp: u64, flow_id: u64) -> Result<QToken, Fail> {
         #[cfg(feature = "profiler")]
         timer!("catcorn::push_slice");
         trace!("push(): qd={:?}", qd);
         let metadata = match self.allocate_tx_buffer()? {
             Some((mut b, _)) => {
+                // write the pkt timestamp and flow id at the beginning of the packet
+                b.write_u64(pkt_timestamp);
+                b.write_u64(0);
+                b.write_u64(flow_id);
+                b.write_u64(0);
                 b.write(slice)?;
-                b.to_metadata(0, slice.len())
+                b.to_metadata(0, slice.len() + 32)
             },
             None => {
                 return Err(Fail::new(libc::EAGAIN, "Could not allocate tx buffer to write slice"));

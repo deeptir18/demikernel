@@ -368,19 +368,44 @@ impl Mlx5Runtime {
     }
 
     fn transmit_header_and_cornflakes_obj(&self, mut header_buffer: datapath_buffer_t, cornflakes_obj: CornflakesObj) {
+        debug!("Reached cornflakes function");
         // wait till number of segments are available
         let inline_len = 0;
         let num_segs_required = cornflakes_obj.num_segments_total(true);
+        debug!("Num segs required: {}", num_segs_required);
         let (num_octowords, num_wqes) = self.wqes_required(inline_len, num_segs_required);
+        debug!("Num wqes: {}, num_octowords {}", num_wqes, num_octowords);
         self.spin_on_available_wqes(num_wqes);
 
         // write header into header buffer
+        // write pkt timestamp and flow id
+        // TODO: should handle case where pkt timestamp and flow id don't even fit
+        if cornflakes_obj.offset() < 32 {
+            if cornflakes_obj.offset() == 0 {
+                debug!("Writing two u64s at the front");
+                header_buffer.write_u64(cornflakes_obj.get_timestamp());
+                header_buffer.write_u64(0);
+                header_buffer.write_u64(cornflakes_obj.get_flow_id());
+                header_buffer.write_u64(0);
+            } else {
+                // handle case of writing partial timestamp and flow id
+                todo!();
+            }
+        }
+        debug!(
+            "Header buf len: {} (before writing cornflakes data)",
+            header_buffer.len()
+        );
         let mut_header_slice = header_buffer
             .mut_slice(header_buffer.len(), header_buffer.max_len() - header_buffer.len())
             .unwrap();
         let written = cornflakes_obj.write_header(mut_header_slice);
         header_buffer.incr_len(written);
         let header_segment = header_buffer.to_metadata(0, header_buffer.len());
+        debug!(
+            "Header buf len: {} (after writing cornflakes data",
+            header_segment.data_len()
+        );
 
         // start transmission
         let ctrl_seg = self.start_dma_request(
@@ -406,6 +431,7 @@ impl Mlx5Runtime {
         let mut callback = |metadata: datapath_metadata_t,
                             ring_buffer_state: &mut (*mut mlx5_wqe_data_seg, *mut custom_mlx5_transmission_info)|
          -> Result<(), Fail> {
+            debug!("In callback");
             // increment reference count on underlying metadata
             unsafe {
                 match metadata.recovery_info {
